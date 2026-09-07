@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.7](https://github.com/willow-memory/ratatosk/compare/v1.2.6...v1.2.7) (2026-09-07)
+
+
+### Fixed
+
+* **crown:** compaction never orphans a tool_result ([1932c69](https://github.com/willow-memory/ratatosk/commit/1932c69bdb81e8dd81135778b293dbd8f65ccaf1))
+* **crown:** compaction never orphans a tool_result ([#17](https://github.com/willow-memory/ratatosk/issues/17)) ([24f1378](https://github.com/willow-memory/ratatosk/commit/24f13786d43a000231dae7529c562c900664e5dc))
+* **tools:** one error shape, an honest schema, signalled truncation ([ecec4a9](https://github.com/willow-memory/ratatosk/commit/ecec4a931c44bfd09a67634919f627f49ab1821d))
+* **tools:** one error shape, an honest schema, signalled truncation ([#15](https://github.com/willow-memory/ratatosk/issues/15)) ([fb0698b](https://github.com/willow-memory/ratatosk/commit/fb0698b7b3221390c95d15cb983efe0615e54bcf))
+
 ## [1.2.6](https://github.com/willow-memory/ratatosk/compare/v1.2.5...v1.2.6) (2026-09-07)
 
 
