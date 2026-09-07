@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.3](https://github.com/willow-memory/ratatosk/compare/v1.2.2...v1.2.3) (2026-09-07)
+
+
+### Fixed
+
+* **crown:** an interrupt ends the turn, not the session ([a897374](https://github.com/willow-memory/ratatosk/commit/a8973744daa99dfe4f18e2dc1d8b3e0f6bc9044b))
+* **crown:** an interrupt ends the turn, not the session ([#7](https://github.com/willow-memory/ratatosk/issues/7)) ([29a7998](https://github.com/willow-memory/ratatosk/commit/29a799837657ddb61fc1368f13d2f309492b3850))
+
 ## [1.2.2](https://github.com/willow-memory/ratatosk/compare/v1.2.1...v1.2.2) (2026-09-07)
 
 
