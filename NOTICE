@@ -8,3 +8,9 @@ willow-mcp and Nestor, both licensed under Apache-2.0 by the same copyright
 holder. This project previously declared MIT in pyproject.toml and shipped no
 LICENSE file; it is relicensed here to Apache-2.0 to match its siblings, by the
 sole copyright holder of every contribution to date.
+
+This product includes software developed for willow-mcp
+(https://github.com/willow-memory/willow-mcp), Copyright 2026 Sean Campbell,
+licensed under the Apache License, Version 2.0. The credential-shaped string
+patterns in ratatosk/redact.py are adapted from willow-mcp's
+src/willow_mcp/secret_scan.py.

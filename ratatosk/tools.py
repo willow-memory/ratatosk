@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 
 from ratatosk.capabilities import ActionResult, CapabilityGate
+from ratatosk.child_env import child_env
+from ratatosk.redact import redact
 from ratatosk.hooks import HookRuntime
 from ratatosk.policy import PolicyStore
 from ratatosk.protocol.envelope import Intent, build_envelope
@@ -150,8 +152,9 @@ def dispatch(
                 capture_output=True,
                 text=True,
                 timeout=_BASH_TIMEOUT,
+                env=child_env(),
             )
-            output = (result.stdout + result.stderr).strip() or "(no output)"
+            output = redact((result.stdout + result.stderr).strip()) or "(no output)"
             if hook_runtime is not None:
                 hook_runtime.run_event(
                     "PostTool",
@@ -166,7 +169,7 @@ def dispatch(
     if name == "Read":
         path = inputs.get("file_path", "") or inputs.get("path", "")
         try:
-            output = Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ]
+            output = redact(Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ])
             if hook_runtime is not None:
                 hook_runtime.run_event(
                     "PostTool",
