@@ -44,15 +44,97 @@ def _resolve_willow_root() -> Path:
 _WILLOW_ROOT = _resolve_willow_root()
 
 
-def _compact(history: list[dict]) -> tuple[list[dict], bool]:
-    total = sum(
+def _blocks(message: dict) -> list[dict]:
+    content = message.get("content")
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def _tool_use_ids(message: dict) -> set[str]:
+    return {b.get("id") for b in _blocks(message) if b.get("type") == "tool_use" and b.get("id")}
+
+
+def _tool_result_ids(message: dict) -> set[str]:
+    return {
+        b.get("tool_use_id")
+        for b in _blocks(message)
+        if b.get("type") == "tool_result" and b.get("tool_use_id")
+    }
+
+
+def _orphans(history: list[dict]) -> set[str]:
+    """tool_result ids in `history` with no matching tool_use before them."""
+    seen: set[str] = set()
+    orphaned: set[str] = set()
+    for message in history:
+        orphaned |= _tool_result_ids(message) - seen
+        seen |= _tool_use_ids(message)
+    return orphaned
+
+
+def _safe_start(history: list[dict], index: int) -> int:
+    """Walk back until the slice starting at `index` has no orphaned results.
+
+    The API rejects a `tool_result` whose `tool_use` is not in the conversation,
+    so a blind tail slice fails the first time compaction triggers in a
+    tool-heavy session: the leading edge lands on a user message of results
+    whose assistant turn was just dropped.
+    """
+    while index > 0 and _orphans(history[index:]):
+        index -= 1
+    return index
+
+
+def _overhead(state: "RuntimeState | None") -> int:
+    """What the budget was ignoring: the system prompt and the tool schemas.
+
+    `_MAX_CHARS` counted the history alone. With MCP connected the serialized
+    tool schemas are plausibly the largest single contributor to a request, so
+    the budget was measuring the smaller half and calling it the total.
+    """
+    if state is None:
+        return 0
+    try:
+        return len(state.system_prompt) + len(json.dumps(state.all_tools))
+    except Exception:
+        return len(state.system_prompt or "")
+
+
+def _size(history: list[dict]) -> int:
+    return sum(
         len(m["content"]) if isinstance(m["content"], str) else sum(len(str(b)) for b in m["content"])
         for m in history
     )
-    if total <= _MAX_CHARS and len(history) <= _MAX_TURNS * 2:
+
+
+def _compact(history: list[dict], state: "RuntimeState | None" = None) -> tuple[list[dict], bool]:
+    budget = _MAX_CHARS - _overhead(state)
+    if _size(history) <= budget and len(history) <= _MAX_TURNS * 2:
         return history, False
-    keep = history[-(_MAX_TURNS * 2) :]
+
+    start = _safe_start(history, max(0, len(history) - _MAX_TURNS * 2))
+
+    # The turn cap is not the only limit. A short history of very large messages
+    # can exceed the budget while sitting well inside _MAX_TURNS, and with MCP
+    # connected the tool schemas can eat most of the budget before any history
+    # is counted at all. Keep dropping from the front, on safe boundaries, until
+    # it fits — or until only the last exchange is left, which is the floor.
+    while start < len(history) - 2 and _size(history[start:]) > budget:
+        start = _safe_start(history, start + 1)
+        if start >= len(history) - 2:
+            break
+
+    keep = history[start:]
+
+    # Belt and braces. The scan should make this impossible, but a dangling
+    # tool_result can also arrive from a *construction* bug with no truncation
+    # involved, and sending one costs a turn and an API error. Dropping the
+    # offending results is worse than keeping more history, so keep more.
+    if _orphans(keep):
+        keep = history
+
     dropped = len(history) - len(keep)
+    if dropped == 0:
+        return history, False
     notice = {
         "role": "user",
         "content": f"[System note: compacted {dropped} earlier messages. Continue from current context.]",
@@ -303,7 +385,7 @@ class CommandRouter:
     def _cmd_compact(self, arg: str) -> bool:
         self.state.hooks.run_event("PreCompact", {"instructions": arg or None})
         before = len(self.state.history)
-        self.state.history, compacted = _compact(self.state.history)
+        self.state.history, compacted = _compact(self.state.history, self.state)
         if compacted:
             message = f"[Compacted local history to last {_MAX_TURNS} turns.]"
             if arg:
@@ -332,7 +414,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         print(text)
         state.writer.write_assistant(text)
         state.history.append({"role": "assistant", "content": text})
-        state.history, compacted = _compact(state.history)
+        state.history, compacted = _compact(state.history, state)
         if compacted:
             print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
         return
@@ -357,7 +439,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         state.history.append({"role": "assistant", "content": assistant_content})
         tool_uses = [block for block in assistant_content if getattr(block, "type", None) == "tool_use"]
         if not tool_uses:
-            state.history, compacted = _compact(state.history)
+            state.history, compacted = _compact(state.history, state)
             if compacted:
                 print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
             break
