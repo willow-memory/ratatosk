@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.4](https://github.com/willow-memory/ratatosk/compare/v1.2.3...v1.2.4) (2026-09-07)
+
+
+### Fixed
+
+* **crown:** a file-loaded key never enters the environment ([fc39732](https://github.com/willow-memory/ratatosk/commit/fc39732fa2b6f6d928f9dd51bb8a29c02924a021))
+* **crown:** a file-loaded key never enters the environment ([#9](https://github.com/willow-memory/ratatosk/issues/9)) ([c0a12f7](https://github.com/willow-memory/ratatosk/commit/c0a12f76347fa71d0a08324598c26237ce8e00eb))
+
 ## [1.2.3](https://github.com/willow-memory/ratatosk/compare/v1.2.2...v1.2.3) (2026-09-07)
 
 
