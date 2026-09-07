@@ -1,0 +1,26 @@
+{
+  "app_id": "ratatosk",
+  "name": "Ratatosk",
+  "role": "session_runtime",
+  "human_only": false,
+  "permissions": [
+    "grove_read",
+    "grove_write",
+    "store_read",
+    "store_write",
+    "knowledge_read",
+    "task_queue",
+    "context",
+    "fork_read"
+  ],
+  "deny_tools": [
+    "kb_promote",
+    "knowledge_ingest",
+    "envelope_ratify",
+    "envelope_propose",
+    "human_attestation_create"
+  ],
+  "store_scope": [
+    "ratatosk_*"
+  ]
+}

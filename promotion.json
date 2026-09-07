@@ -1,0 +1,13 @@
+{
+  "app_id": "ratatosk",
+  "author": "sean",
+  "verified_by": "rudi193",
+  "repo_url": "https://github.com/willow-memory/ratatosk",
+  "host": "safe-app-store",
+  "core_module": "ratatosk",
+  "pure_core": "ratatosk",
+  "semantic_seam": "ratatosk.capabilities:CapabilityGate",
+  "host_repointed": true,
+  "major": "python",
+  "notes": "Platform session runtime on willow-memory. Host consumes ratatosk-meaning package; playground launcher remains at apps/ratatosk."
+}
