@@ -25,8 +25,13 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-import tomllib  # stdlib from 3.11
+import sys
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # 3.10 has no tomllib, and this package still supports it
+    import tomli as tomllib
 
 import pytest
 
