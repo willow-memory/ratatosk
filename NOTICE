@@ -1,0 +1,10 @@
+Ratatosk
+Copyright 2026 Sean Campbell
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+Ratatosk is the platform session runtime of the Willow fleet, sibling to
+willow-mcp and Nestor, both licensed under Apache-2.0 by the same copyright
+holder. This project previously declared MIT in pyproject.toml and shipped no
+LICENSE file; it is relicensed here to Apache-2.0 to match its siblings, by the
+sole copyright holder of every contribution to date.
