@@ -94,6 +94,12 @@ class BusListener:
         if not env:
             return None
 
+        # Second, independent guard. run_once filters on the raw message; this
+        # one catches any caller reaching process_message directly.
+        if self.is_own_post(env.sender):
+            log_trace(env.trace_id, "skipped_own_post", {"sender": env.sender})
+            return None
+
         log_trace(env.trace_id, "received", {"sender": msg.get("sender"), "intent": env.intent})
         validation = validate_envelope(env, node=self.node)
         if not validation.ok:
@@ -140,11 +146,29 @@ class BusListener:
         )
         return _as_messages(result)
 
+    def is_own_post(self, sender: Any) -> bool:
+        """True when ``sender`` is this seat.
+
+        A seat's own posts never wake it. Without this the loop is closed:
+        ``process_message`` replies with ``"sender": self.node``, the reply is
+        re-fetched on the next poll, and ``parse_grove_message`` turns any
+        unaddressed text into a fresh chat envelope for this node. Replay
+        detection cannot break it either — the self-parse mints a new nonce.
+        """
+        if not isinstance(sender, str):
+            return False
+        return sender.strip().lower() == self.node.strip().lower()
+
     def run_once(self) -> list[str]:
         outputs: list[str] = []
         for msg in self.fetch_messages():
             msg_id = int(msg.get("id") or 0)
             if msg_id <= self.state.cursor:
+                continue
+            # Advance past our own post before doing anything with it. Skipping
+            # the cursor advance instead would re-examine it on every poll.
+            if self.is_own_post(msg.get("sender")):
+                self.state.cursor = max(self.state.cursor, msg_id)
                 continue
             self.state.cursor = max(self.state.cursor, msg_id)
             out = self.process_message(msg)
