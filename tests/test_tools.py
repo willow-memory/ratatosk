@@ -1,14 +1,23 @@
 import json
 
+import pytest
+
 from ratatosk.hooks import HookRuntime
 from ratatosk.policy import PolicyStore
+from ratatosk.permission import NeedsConfirmation
 from ratatosk.tools import dispatch
 
 
 def test_bash_blocked_without_trust():
-    result = dispatch("Bash", {"command": "echo hi"}, set(), None, trusted=False)
-    payload = json.loads(result)
-    assert "error" in payload
+    """Now raises rather than returning an error string.
+
+    A confirm is an unfinished decision, not an answer — a caller that does not
+    handle it must fail closed. This previously returned a JSON error only
+    because the gate happened to refuse; the `confirm` verdict itself fell
+    through and executed.
+    """
+    with pytest.raises(NeedsConfirmation):
+        dispatch("Bash", {"command": "echo hi"}, set(), None, trusted=False)
 
 
 def test_bash_allowed_with_trust():

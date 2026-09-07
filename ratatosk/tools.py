@@ -7,12 +7,12 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from ratatosk.capabilities import ActionResult, CapabilityGate
+from ratatosk.capabilities import CapabilityGate
 from ratatosk.child_env import child_env
+from ratatosk.permission import NeedsConfirmation, Verdict, check
 from ratatosk.redact import redact
 from ratatosk.hooks import HookRuntime
 from ratatosk.policy import PolicyStore
-from ratatosk.protocol.envelope import Intent, build_envelope
 
 BASH_TOOL = {
     "name": "Bash",
@@ -85,24 +85,19 @@ BASE_TOOLS = [BASH_TOOL, READ_TOOL, WRITE_TOOL, EDIT_TOOL, GLOB_TOOL]
 
 _MAX_READ = 4000
 _BASH_TIMEOUT = 60
-_GATE = CapabilityGate()
 
 
-def _bash_allowed(command: str, trusted: bool) -> tuple[bool, str]:
-    if trusted:
-        return True, ""
-    env = build_envelope(
-        to="local",
-        prompt=command,
-        intent=Intent.SHELL.value,
-        requires_confirm=not trusted,
-    )
-    action = _GATE.classify(env)
-    if action == ActionResult.REJECTED:
-        return False, "shell blocked by capability gate — use --trust or confirm"
-    if action == ActionResult.QUEUED_CONFIRM and not trusted:
-        return False, "shell requires confirmation"
-    return True, ""
+def _gate_for(gate: CapabilityGate | None) -> CapabilityGate:
+    """A per-call gate unless the caller supplies one.
+
+    This used to be a module-level singleton whose `pending` dict grew an entry
+    for every classified command and was never popped, so a long session
+    accumulated every rejected command string. Nothing can resume from a pending
+    entry today, so it dies with the call. A persistent queue is the right
+    answer only once a resumable caller exists — forge-play's `human_loop` is
+    the design to adopt then.
+    """
+    return gate if gate is not None else CapabilityGate()
 
 
 def dispatch(
@@ -114,6 +109,7 @@ def dispatch(
     trusted: bool = False,
     policy_store: PolicyStore | None = None,
     hook_runtime: HookRuntime | None = None,
+    gate: CapabilityGate | None = None,
 ) -> object:
     tool_use_id = str(uuid.uuid4())
     if hook_runtime is not None:
@@ -122,23 +118,22 @@ def dispatch(
             {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
         )
 
-    if policy_store is not None:
-        decision = policy_store.decide(name)
-        if decision == "deny":
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PermissionDenied",
-                    {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
-                )
-            return json.dumps({"error": f"policy denied tool: {name}"})
-        if decision == "allow":
-            trusted = True
+    # The single chokepoint. Every verdict is resolved here, before any tool
+    # body runs, so a branch below cannot be reached around.
+    decision = check(name, inputs, trusted=trusted, policy=policy_store, gate=_gate_for(gate))
+    if decision.verdict is Verdict.DENY:
+        if hook_runtime is not None:
+            hook_runtime.run_event(
+                "PermissionDenied",
+                {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+            )
+        return json.dumps({"error": decision.reason})
+    if decision.verdict is Verdict.CONFIRM:
+        raise NeedsConfirmation(name, inputs, decision)
+    trusted = True
 
     if name == "Bash":
         cmd = inputs.get("command", "")
-        allowed, reason = _bash_allowed(cmd, trusted)
-        if not allowed:
-            return json.dumps({"error": reason})
         try:
             argv = shlex.split(cmd, posix=True)
         except ValueError as exc:
@@ -256,24 +251,43 @@ def prompt_and_dispatch(
     policy_store: PolicyStore | None = None,
     hook_runtime: HookRuntime | None = None,
 ) -> object:
-    if policy_store is not None and policy_store.decide(name) == "allow":
-        trusted = True
+    """Resolve a CONFIRM by asking the human. The CLI's answer to the seam.
 
-    if not trusted:
+    It no longer re-derives the verdict from `trusted` — that is what made an
+    explicit `Write -> confirm` rule a no-op under `--trust`. It runs the call,
+    and only if `dispatch` says a human is needed does it ask.
+    """
+    gate = CapabilityGate()
+    try:
+        return dispatch(
+            name,
+            inputs,
+            mcp_names,
+            mcp_call,
+            trusted=trusted,
+            policy_store=policy_store,
+            hook_runtime=hook_runtime,
+            gate=gate,
+        )
+    except NeedsConfirmation as needs:
         summary = json.dumps(inputs, ensure_ascii=False)[:200]
         print(f"\n  [tool:{name}] {summary}")
+        print(f"  reason: {needs.decision.reason}")
         try:
             answer = input("  Allow? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer != "y":
             return json.dumps({"error": "user denied"})
-    return dispatch(
-        name,
-        inputs,
-        mcp_names,
-        mcp_call,
-        trusted=trusted,
-        policy_store=policy_store,
-        hook_runtime=hook_runtime,
-    )
+        # One-shot approval for this call only: re-enter with the verdict
+        # already resolved, never by widening the policy.
+        return dispatch(
+            name,
+            inputs,
+            mcp_names,
+            mcp_call,
+            trusted=True,
+            policy_store=None,
+            hook_runtime=hook_runtime,
+            gate=gate,
+        )
