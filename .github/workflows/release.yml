@@ -33,7 +33,7 @@ jobs:
       - name: Assert the tag matches the built version
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          built="$(ls dist/*.tar.gz | sed -E 's|.*/willow-ratatosk-(.+)\.tar\.gz|\1|')"
+          built="$(ls dist/willow_ratatosk-*.tar.gz | sed -E 's|.*/willow_ratatosk-(.+)\.tar\.gz|\1|')"
           echo "tag=${tag}  built=${built}"
           if [ "$tag" != "$built" ]; then
             echo "::error::tag v${tag} builds version ${built} — refusing to publish"
