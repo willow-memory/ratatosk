@@ -4,16 +4,19 @@ A survey against the defects in [`BUGS.md`](BUGS.md), done to answer one
 question per defect: **has somebody already solved this better, and can we
 take it?**
 
-The short answer across six defect clusters: almost nothing is worth
-*vendoring*, and almost everything is worth *reading*. Every recommendation
-below is a design ported into our own stdlib code, not a file copied in. That
-is not license caution — it is what the survey actually found. The good
-solutions are either entangled with a host framework's data model
-(OpenHands' event graph, PydanticAI's toolsets), written in another language
-(Codex CLI, goose), or so small once understood that copying costs more than
-writing.
+The short answer across six defect clusters: almost nothing *outside* this
+fleet is worth vendoring, and almost everything is worth reading. Every
+recommendation drawn from a third party below is a design ported into our own
+stdlib code, not a file copied in. That is not license caution — it is what the
+survey found. The good solutions are either entangled with a host framework's
+data model (OpenHands' event graph, PydanticAI's toolsets), written in another
+language (Codex CLI, goose), or so small once understood that copying costs
+more than writing.
 
-Three of the six answers are already in this fleet. Those are first.
+The exceptions are all our own prior work. Three of the six answers are
+already in the live fleet, and a seventh problem — running on any provider's
+key rather than Anthropic's — turns out to be largely solved in `willow-2.0`,
+which is Apache-2.0 and therefore a straight copy. Those come first.
 
 ---
 
@@ -21,6 +24,18 @@ Three of the six answers are already in this fleet. Those are first.
 
 This repo is Apache-2.0 as of the relicense commit; `willow-mcp` and `Nestor`
 are too. Code can move between the three without a seam.
+
+The archives differ, and it matters:
+[`rudi193-cmd/willow-2.0`](https://github.com/rudi193-cmd/willow-2.0) is
+**Apache-2.0** with a `LICENSE` and `NOTICE`;
+[`rudi193-cmd/willow-1.9`](https://github.com/rudi193-cmd/willow-1.9) is
+**PolyForm Noncommercial 1.0.0**. Both are public and archived, both are the
+same copyright holder. Taking from 2.0 is a plain copy needing only a `NOTICE`
+entry. Taking from 1.9 would need an explicit relicense by the copyright
+holder — the precedent exists in `willow-mcp`'s own `NOTICE`, which relicenses
+the Nest and `mai` code out of PolyForm on exactly that basis, but it is a
+decision to record, not a formality. **Nothing below needs it**: see the
+finding that the two archives carry the same code.
 
 For outside code: MIT/BSD/ISC drops in with its copyright line retained.
 Apache-2.0 drops in retaining its own header, with a `NOTICE` entry.
@@ -108,6 +123,146 @@ NFC-normalizes strings, and neither rejects duplicate JSON keys. Three drift
 points in one repo, in the one place where drift is silent — a signature from
 one will never verify in the other. Not this repo's bug, but this repo should
 not inherit it: pick one rule (below) and put it somewhere all three can call.
+
+---
+
+## Bring your own key — mostly already written
+
+The goal: no hard dependency on Anthropic, or on any one vendor. A user brings
+whatever key they have — including a free one — and Ratatosk runs. Today
+`crown.py` has exactly two paths, `anthropic` or Ollama, and the tool loop
+speaks Anthropic's content-block format natively.
+
+`willow-2.0` already built most of this, in stdlib, and its
+`core/inference_router.py` docstring states the thesis outright:
+
+> *"Priority (`WILLOW_INFERENCE_PROVIDER`): local → Ollama only · cloud →
+> Gemini → Groq (70b) → OpenRouter-compatible fleet keys · auto → Ollama, then
+> cloud chain. **No Anthropic required. Any OpenAI-compatible or Gemini REST
+> key works.**"*
+
+### What to take, and from where
+
+| Module | Lines | What it is |
+|---|---|---|
+| `core/model_adapter.py` | 219 | `ModelAdapter` ABC + Ollama / Anthropic / Groq / xAI / **OpenAI-compatible** implementations + `get_adapter()` factory. Pure `urllib.request`. |
+| `core/inference_router.py` | 234 | The fallback chain. `local` / `cloud` / `auto` modes; returns `(text, provider_used)` so the caller knows who answered. |
+| `core/providers.py` | 177 | Provider registry persisted in the store: enable/disable, key masking, per-provider model lists. |
+| `tests/test_model_adapter.py` | 67 | Bring them. |
+| `tests/test_providers.py` | 120 | Bring them. |
+
+**Take all of it from 2.0, not 1.9.** The two archives carry the *same* seam:
+`model_adapter.py` differs by two hunks (a default model id, one extra entry in
+`available_models()`), `providers.py` by a single list item. Since the code is
+identical and 2.0 is Apache-2.0 while 1.9 is PolyForm, copying from 2.0 removes
+the relicensing question entirely.
+
+1.9 has **no fallback chain at all** — no `inference_router.py`, no
+`llm_edge.py`, and nothing equivalent hiding in `fleet.py` or
+`sap/middleware.py`. The router is genuinely new in 2.0.
+
+### Three details worth keeping
+
+- **`chat()` returns `(text, provider_used)`.** A fallback chain that does not
+  report which link answered is unauditable, and this one does.
+- **Enabled ≠ installed.** `providers.py` treats an enabled-but-unreachable
+  Ollama as a skip, not an error — *"Ollama being enabled means the user wants
+  it, not that it's installed"* — and Ollama cannot be disabled at all, because
+  it is the local-first floor.
+- **Free-tier key rotation.** `scripts/groq_agent.py` resolves
+  `GROQ_API_KEY or GROQ_API_KEY_2 or GROQ_API_KEY_3`. Unglamorous, and it is
+  the detail that makes a free tier actually usable under rate limits.
+
+### Four things to fix on the way in
+
+1. **Trim the router's fleet couplings.** `_try_fleet` (imports
+   `sap.clients.professor_client`) and `_try_hns` (imports `core.store_port`,
+   `willow.hns_scheduler`, `willow.hns_enforcer`) are fleet-internal branches
+   that mean nothing to a standalone session runtime. Dropping both leaves
+   `_try_ollama`, `_try_gemini`, `_try_groq`, `_try_openrouter`, `_chain` and
+   `chat` — stdlib-only and self-contained. About a 60-line trim.
+2. **The credential vault degrades silently.** `sap/core/inference.py`'s
+   `load_credential` tries the Fernet-encrypted SQLite vault, falls back to a
+   plaintext `credentials.json`, then to the environment — each inside a bare
+   `except: pass`. On Termux, where `cryptography` will not build, that is an
+   unannounced downgrade from encrypted storage to a plaintext file. Make the
+   fallback explicit and loud: a degrade the operator chose, not one that
+   happened to them. Same rule as everywhere else here — never a silent
+   fail-open.
+3. **`AnthropicAdapter.health()` makes a real billed API call** to check
+   liveness. On a metered free tier that is quota spent on a ping.
+4. **Drop the `__import__("os")` line.** `CODEX_REPO` on line 26 of
+   `sap/core/inference.py` uses inline `__import__` for `os` and `pathlib` in a
+   file that already imports both at the top. Present in 1.9 and 2.0 alike, so
+   it is an original wart rather than a regression — do not carry it forward.
+
+One file 2.0 dropped, `ganas_client.py`, was correctly dropped: its `chat()`
+returned bracketed error strings *as content* (`"[ganas2 unavailable — …]"`),
+so a failure became model-visible text instead of a signal. The 2.0 adapters
+return `None` or raise, which is what a chain needs in order to fall through.
+
+### The part that is genuinely new work
+
+`ModelAdapter.chat()` returns a `str`, and `inference_router.chat(system,
+user)` takes two strings. **There is no tool use, no streaming, and no
+multi-turn history anywhere in it.**
+
+So `willow-2.0` solved BYOK for *single-turn chat*. Ratatosk needs BYOK for a
+*tool-using agent loop*, which is strictly harder, and harder exactly where the
+wire formats diverge: Anthropic represents a tool round as content-block arrays
+(`tool_use` blocks in an assistant message, `tool_result` blocks in the
+following user message), while OpenAI-compatible endpoints use `tool_calls` on
+the assistant message plus separate `role: "tool"` messages keyed by
+`tool_call_id`. Those are not two dialects of one shape. One flat list cannot
+be sent to both.
+
+Widening the seam therefore means:
+
+- `chat()` takes a **neutral history** and a tool-schema list, and returns
+  text *plus* any tool calls, rather than a bare string.
+- Each adapter serializes the neutral form to its own wire format at the edge,
+  and parses tool calls back out of it.
+- A `supports_tools` capability flag per provider, checked up front — plenty of
+  free endpoints do not do tool use, and refusing clearly beats a 400 mid-loop.
+- Streaming as an optional adapter capability, with a non-streaming fallback,
+  since not every endpoint offers it.
+
+### What this does to the compaction fix
+
+It settles it. The survey argued *against* restructuring history into
+exchanges, on the grounds that a wrapper type touches every append, read and
+serialize site while the boundary scan is fifteen lines. That reasoning held
+for a single backend. With two wire formats a neutral internal representation
+is no longer optional — and once history is a list of exchanges rather than a
+flat list of messages, **the orphaned-`tool_result` bug cannot be expressed.**
+You cannot slice between a tool call and its result when they are one object.
+
+So the compaction fix stops being a fix and becomes a consequence of the
+provider seam. Keep the pre-send validation pass anyway (smolagents' PR #1132
+is a dangling `tool_result` produced by a construction bug, no truncation
+involved), but the boundary scan is no longer the design.
+
+This also retracts one earlier note: Anthropic's server-side context editing
+only helps on the Anthropic path, and free tiers tend to have *small* context
+windows, so local compaction gets **more** load-bearing under BYOK, not less.
+
+### Key custody, which BYOK makes urgent
+
+`crown.py`'s `_load_api_key` reads a key out of a file and writes it into
+`os.environ` (line 66). Neither the Bash tool nor the hook runtime passes an
+explicit `env=`, so both inherit it. A model-invoked `Bash` call running `env`
+dumps the key into the transcript, and under `--trust` it does so without
+asking. Today that is one key; under BYOK it is every key a user has
+configured.
+
+Fix it here rather than in PR 6: stop writing file-loaded keys into the
+process environment, and pass an allowlisted `env=` to both `subprocess.run`
+sites. That is the minimal-env hardening PR 6 wants anyway, so it lands once
+and serves both.
+
+And `willow-2.0` already has the regression test for this class:
+`scripts/verify_public_fallback.py` scans a pack for `gsk_`, `sk-ant-`, the
+operator's home path, and bare `GROQ_API_KEY=`-style assignments. Port it.
 
 ---
 
@@ -201,7 +356,30 @@ operating system — Landlock/seccomp, Seatbelt — so no internal call path can
 bypass it regardless of control flow. This is an in-process gate and is weaker.
 Say so rather than overselling it.
 
-### PR 3 — Compaction (BUGS §4)
+### PR 3 — The provider seam and BYOK
+
+Vendor `core/model_adapter.py`, `core/providers.py` and a trimmed
+`core/inference_router.py` from `willow-2.0` (Apache-2.0, `NOTICE` entry
+owed), with their two test files. Drop `_try_fleet` and `_try_hns`. Make the
+credential-vault fallback loud instead of silent. Fix the key-into-`environ`
+leak and pass an allowlisted `env=` to both `subprocess.run` sites. Port
+`verify_public_fallback.py` as the secret-leak regression gate.
+
+Then widen `chat()` to carry a neutral history, tool schemas, tool calls out,
+and optional streaming, with a `supports_tools` flag checked before a
+tool-using turn is attempted. Serialize to each wire format at the adapter
+edge.
+
+Full detail in **Bring your own key** above. This is the largest single change
+in the plan and it subsumes most of PR 4.
+
+### PR 4 — Compaction (BUGS §4)
+
+**Mostly falls out of PR 3.** Once history is a list of exchanges, the
+orphaned-`tool_result` bug cannot be expressed. What remains is the
+pre-send validation pass and the budget accounting below. The boundary-scan
+algorithm is kept here as the fallback design if the seam lands later than
+this fix.
 
 **First, check whether we need most of it.** The Anthropic API reportedly
 carries server-side context editing (`context_management`, strategy
@@ -241,7 +419,7 @@ budget, plus a reserve for `max_tokens` output. Keep `chars/4` as the token
 proxy; offer `/v1/messages/count_tokens` as an opt-in exact measure when the
 `cloud` extra is present.
 
-### PR 4 — Hooks (BUGS: hooks and events)
+### PR 5 — Hooks (BUGS: hooks and events)
 
 **Exit code 2 is the only "deliberate block."** Any other nonzero means the
 hook crashed. Conflating the two means a broken hook silently denies — this
@@ -284,7 +462,7 @@ override a hook deny. Hooks may be the *more* restrictive voice, never the less.
 group/world-writability on the config and on each referenced script, and an
 explicit opt-in before hooks from a new directory are executed at all.
 
-### PR 5 — Shell honesty and hardening (BUGS: schema overclaim, silent truncation)
+### PR 6 — Shell honesty and hardening (BUGS: schema overclaim, silent truncation)
 
 **Keep `shell=False`. Fix the schema.** This is the highest-value, lowest-risk
 change in the whole set and costs nothing. The description must say: no pipes,
@@ -336,7 +514,7 @@ unprivileged user namespaces or a kernel LSM that Android does not reliably
 provide, and Codex demoted Landlock to a documented fallback behind bubblewrap
 for exactly this kind of reason. Degrade loudly, never silently.
 
-### PR 6+ — Envelope authentication (separate arc)
+### PR 7+ — Envelope authentication (separate arc)
 
 Not a bug fix; a missing layer. The envelope has the entire shape of an
 authenticated message and none of the substance — `from_agent` is a
@@ -420,8 +598,15 @@ four things, and nothing else, is the obvious move. That decision belongs in
 
 ## Sources
 
-Read for design, none vendored. Licenses verified from the projects' own
-LICENSE files at time of survey.
+**Vendored, or to be:** `rudi193-cmd/willow-2.0` (Apache-2.0, verified from its
+own `LICENSE` and `NOTICE`) — `core/model_adapter.py`, `core/providers.py`,
+`core/inference_router.py`, `scripts/verify_public_fallback.py` and two test
+files. `rudi193-cmd/willow-1.9` (PolyForm Noncommercial 1.0.0) was read for
+comparison and nothing is taken from it, because 2.0 carries the same code
+under a license that does not require a relicense decision.
+
+Everything below is **read for design, none vendored.** Licenses verified from
+the projects' own LICENSE files at time of survey.
 
 Permissive: OpenHands (MIT), PydanticAI (MIT), Continue (Apache-2.0), Codex CLI
 (Apache-2.0), goose (Apache-2.0), aider (Apache-2.0), smolagents (Apache-2.0),

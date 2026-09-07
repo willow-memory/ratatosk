@@ -40,6 +40,16 @@
   dropped. The API rejects that, so a long tool-heavy session fails at the point
   compaction first triggers.
 
+- **The API key is handed to every subprocess.** `_load_api_key`
+  (`ratatosk/crown.py:66`) reads a key out of a credentials file and writes it
+  into `os.environ`. Neither the Bash tool (`ratatosk/tools.py:147`) nor the
+  hook runtime (`ratatosk/hooks.py:49`) passes an explicit `env=`, so both
+  inherit it — a model-invoked `Bash` call running `env` prints the key into
+  the transcript, and under `--trust` it does so without asking. Fix is two
+  parts: do not put a file-loaded secret into the process environment, and pass
+  an allowlisted `env=` to both `subprocess.run` sites. This gets worse with
+  per-provider keys; see `docs/prior-art.md` → *Key custody*.
+
 - **The module-level capability gate never drains.** `_GATE`
   (`ratatosk/tools.py:86`) is process-wide, and every untrusted Bash call runs
   `classify()`, which inserts a `PendingConfirm` that nothing ever pops. A long
