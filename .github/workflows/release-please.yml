@@ -50,4 +50,15 @@ jobs:
             echo "No open release PR — nothing releasable since the last tag."
             exit 0
           fi
-          gh pr merge --auto --merge "$pr" --repo "$REPO" || true
+          # Arming can fail for reasons that are not this job's fault (most
+          # commonly: the default branch has no required status checks, so
+          # GitHub refuses enablePullRequestAutoMerge). That must not fail the
+          # release-please job — but it must not be silent either. A bare
+          # `|| true` hid exactly this for six releases, during which every
+          # release PR merged immediately and published to PyPI before CI ran.
+          if ! out=$(gh pr merge --auto --merge "$pr" --repo "$REPO" 2>&1); then
+            echo "::warning::could not arm auto-merge on PR #${pr}: ${out}"
+            echo "::warning::the release PR is open and must be merged by hand"
+          else
+            echo "auto-merge armed on PR #${pr}"
+          fi
