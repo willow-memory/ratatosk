@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.9](https://github.com/willow-memory/ratatosk/compare/v1.2.8...v1.2.9) (2026-09-07)
+
+
+### Fixed
+
+* **protocol:** close the last two defects, and stop BUGS.md lying ([a737cdf](https://github.com/willow-memory/ratatosk/commit/a737cdf404b474daf5af2e018c303da424940cd7))
+* **protocol:** close the last two defects, and stop BUGS.md lying ([#20](https://github.com/willow-memory/ratatosk/issues/20)) ([be7b3cf](https://github.com/willow-memory/ratatosk/commit/be7b3cf012a34f3bc54fb7cd83c722ee7e8c1520))
+
 ## [1.2.8](https://github.com/willow-memory/ratatosk/compare/v1.2.7...v1.2.8) (2026-09-07)
 
 
