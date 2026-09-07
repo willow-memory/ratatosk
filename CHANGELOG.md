@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.6](https://github.com/willow-memory/ratatosk/compare/v1.2.5...v1.2.6) (2026-09-07)
+
+
+### Fixed
+
+* **hooks:** a hook runs as what it is, and PreTool can block ([28c5315](https://github.com/willow-memory/ratatosk/commit/28c5315b3ef6c79b3049c4366828925562d9c60b))
+* **hooks:** a hook runs as what it is, and PreTool can block ([#13](https://github.com/willow-memory/ratatosk/issues/13)) ([1133bb3](https://github.com/willow-memory/ratatosk/commit/1133bb33b803c2290a00b1df9e197b19e0db3ecf))
+
 ## [1.2.5](https://github.com/willow-memory/ratatosk/compare/v1.2.4...v1.2.5) (2026-09-07)
 
 
