@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.10](https://github.com/willow-memory/ratatosk/compare/v1.2.9...v1.2.10) (2026-09-07)
+
+
+### Fixed
+
+* **grove:** refuse an unset channel instead of defaulting to general ([70a994d](https://github.com/willow-memory/ratatosk/commit/70a994de5196ea960c396b48db79eb66f4e9e60f))
+* **grove:** refuse an unset channel instead of defaulting to general ([#22](https://github.com/willow-memory/ratatosk/issues/22)) ([ae527e6](https://github.com/willow-memory/ratatosk/commit/ae527e60493ed89dc84e3fb7e5ec94e3438657af))
+
 ## [1.2.9](https://github.com/willow-memory/ratatosk/compare/v1.2.8...v1.2.9) (2026-09-07)
 
 
