@@ -1,0 +1,40 @@
+# Ideas Backlog
+
+- Session replay command: rebuild a readable transcript from JSONL with filters (`--session`, `--since`, `--tool-only`).
+- `/resume` command: pick up prior session context from latest JSONL/deposit automatically.
+- Safer shell execution tiers: allowlist low-risk commands, stricter confirmation for risky patterns.
+- Tool result caching: memoize deterministic reads/globs during a session to cut repeated tool latency.
+- Better compaction strategy: summarize dropped turns instead of just adding a generic system note.
+- Pluggable tool packs: load optional local tool modules from a `tools.d` folder.
+- Rich `/status` dashboard: include MCP tool count, Grove channel health, token/char budget usage.
+- Session tags and metadata: let users tag sessions (`incident`, `research`, `release`) for later retrieval.
+- Auto-deposit intervals: periodic tier-0 deposit snapshots, not only on exit.
+- Local-first model fallback chain: try preferred Ollama model, then fallback list if unavailable.
+- Built-in transcript redaction: scrub secrets/paths before writing JSONL/deposit exports.
+- “Dry-run tools” mode: preview tool calls and expected effects without executing them.
+- Health check command: end-to-end diagnostic for MCP connectivity, manifest registration, and Grove send/receipt.
+- Session search index: lightweight local index so you can grep prior sessions by keyword instantly.
+- `/sessions` command: list recent sessions with model, turns, cwd, and quick-open ID.
+- Crash recovery mode: detect interrupted runs and offer to continue from last safe point.
+- Tool execution receipts: structured per-tool metadata (duration, exit status, bytes read/written) in JSONL.
+- Cost and token telemetry: per-turn estimates and cumulative session totals for cloud runs.
+- Prompt profile presets: named profiles for coding, triage, architecture, and research.
+- Multi-model routing policy: route tasks by intent (chat vs tool-heavy) to preferred model classes.
+- Prompt sandboxing for tools: strip or isolate tool input from prompt injection patterns.
+- Secret detection before writes: block writing obvious credentials into logs/deposits.
+- File operation guardrails: require explicit confirmation for deletes, chmod, and outside-cwd writes.
+- `/undo-last-tool` support: reversible operations for write/edit actions when possible.
+- Background job manager: start, track, and summarize long-running local commands.
+- Diff-aware context loader: automatically include recent git diff hunks in assistant context.
+- MCP tool capability map: show which tools are read-only, mutating, or privileged.
+- Grove heartbeat pings: periodic liveness signal with last-turn timestamp.
+- Session event webhooks: optional local HTTP callbacks for start/end/tool events.
+- JSONL schema versioning + migrator: upgrade older sessions safely across releases.
+- Built-in export formats: markdown transcript, HTML report, and machine-readable audit bundle.
+- Policy packs: selectable strictness templates (safe, balanced, power-user) for capability gating.
+- Plugin API docs and examples: standardized interface + starter plugins for external tools.
+- `/doctor` deep diagnostics: verify env vars, dependencies, model availability, and file permissions.
+- Snapshot tests for CLI UX: lock expected console flows for commands and tool confirmations.
+- End-to-end fixture harness: deterministic tests for MCP handshake and tool loop behavior.
+- Release automation: changelog generation, version bump checks, and publish pipeline.
+

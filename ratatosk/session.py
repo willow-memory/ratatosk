@@ -58,13 +58,24 @@ class SessionWriter:
     def write_assistant(self, text: str) -> None:
         self.write(self._entry("assistant", message={"role": "assistant", "content": text}))
 
+    def write_system(self, text: str) -> None:
+        self.write(self._entry("system", message={"role": "system", "content": text}))
+
+    def read_entries(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        entries: list[dict] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entries.append(json.loads(line))
+        return entries
+
     def export_deposit(self, out_dir: Path | None = None) -> Path:
         out_dir = out_dir or (ratatosk_data_root() / "sync-out")
         out_dir.mkdir(parents=True, exist_ok=True)
         bundle = out_dir / f"{self.session_id}.deposit.json"
-        lines = []
-        if self.path.exists():
-            lines = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        lines = self.read_entries()
         bundle.write_text(
             json.dumps(
                 {

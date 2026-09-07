@@ -1,40 +1,39 @@
 """Ratatosk entry point — platform session runtime."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from ratatosk import grove as _grove
 from ratatosk import session as _session
 from ratatosk import sync as _sync
 from ratatosk import tools as _tools
+from ratatosk.history import ensure_history_db, index_session, list_sessions, load_session_history, search_sessions
+from ratatosk.hooks import HookRuntime
+from ratatosk.policy import PolicyStore
 
 _HOME = Path.home()
 _WILLOW_ROOT = Path(os.environ.get("WILLOW_ROOT", str(_HOME / "github" / "willow-memory" / "willow")))
-_HOOKS_DIR = _HOME / ".claude" / "hooks"
 _MAX_TURNS = 20
 _MAX_CHARS = 200_000
 
 
 def _compact(history: list[dict]) -> tuple[list[dict], bool]:
     total = sum(
-        len(m["content"]) if isinstance(m["content"], str)
-        else sum(len(str(b)) for b in m["content"])
+        len(m["content"]) if isinstance(m["content"], str) else sum(len(str(b)) for b in m["content"])
         for m in history
     )
     if total <= _MAX_CHARS and len(history) <= _MAX_TURNS * 2:
         return history, False
-    keep = history[-(_MAX_TURNS * 2):]
+    keep = history[-(_MAX_TURNS * 2) :]
     dropped = len(history) - len(keep)
     notice = {
         "role": "user",
-        "content": (
-            f"[System note: {dropped} earlier messages compacted. "
-            f"Continuing from turn {len(history) // 2 - _MAX_TURNS + 1}.]"
-        ),
+        "content": f"[System note: compacted {dropped} earlier messages. Continue from current context.]",
     }
     return [notice] + keep, True
 
@@ -51,17 +50,14 @@ def _load_system_prompt() -> str:
             content = path.read_text(encoding="utf-8").strip()
             if content:
                 parts.append(f"# {path}\n\n{content}")
-    return "\n\n---\n\n".join(parts) if parts else "You are Ratatosk — platform session runtime. ΔΣ=42"
+    return "\n\n---\n\n".join(parts) if parts else "You are Ratatosk — platform session runtime."
 
 
 def _load_api_key() -> str:
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
         return key
-    for candidate in [
-        _HOME / ".ratatosk" / "credentials.json",
-        _WILLOW_ROOT / "credentials.json",
-    ]:
+    for candidate in [_HOME / ".ratatosk" / "credentials.json", _WILLOW_ROOT / "credentials.json"]:
         if candidate.exists():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -74,26 +70,263 @@ def _load_api_key() -> str:
     return ""
 
 
-def _run_hook(script: str | Path, stdin_data: dict | None = None) -> None:
-    if not Path(script).exists():
+def _render_transcript(entries: list[dict]) -> str:
+    lines: list[str] = []
+    for entry in entries:
+        role = entry.get("message", {}).get("role", entry.get("type", "unknown"))
+        content = entry.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            content = str(content)
+        lines.append(f"{role}: {content}")
+    return "\n\n".join(lines)
+
+
+@dataclass
+class RuntimeState:
+    args: argparse.Namespace
+    model: str
+    writer: _session.SessionWriter
+    history: list[dict]
+    system_prompt: str
+    all_tools: list[dict]
+    mcp_names: set[str]
+    mcp_call: object
+    client: object | None
+    policy: PolicyStore
+    hooks: HookRuntime
+    resumed_from: str | None = None
+
+
+class CommandRouter:
+    def __init__(self, state: RuntimeState):
+        self.state = state
+
+    def run(self, user_input: str) -> bool:
+        cmd, _, rest = user_input.partition(" ")
+        arg = rest.strip()
+        handler = {
+            "/exit": self._cmd_exit,
+            "/clear": self._cmd_clear,
+            "/status": self._cmd_status,
+            "/sessions": self._cmd_sessions,
+            "/resume": self._cmd_resume,
+            "/doctor": self._cmd_doctor,
+            "/export": self._cmd_export,
+            "/permissions": self._cmd_permissions,
+            "/hooks": self._cmd_hooks,
+            "/compact": self._cmd_compact,
+            "/help": self._cmd_help,
+        }.get(cmd)
+        if handler is None:
+            print(f"  unknown command: {cmd}")
+            return False
+        return handler(arg)
+
+    def _cmd_exit(self, _arg: str) -> bool:
+        return True
+
+    def _cmd_clear(self, _arg: str) -> bool:
+        self.state.history = []
+        print("  history cleared")
+        return False
+
+    def _cmd_status(self, _arg: str) -> bool:
+        receipt = _grove.last_receipt()
+        print(f"  session    : {self.state.writer.session_id}")
+        print(f"  turns      : {len(self.state.history) // 2}")
+        print(f"  jsonl      : {self.state.writer.path}")
+        print(f"  model      : {self.state.model}")
+        print(f"  mcp tools  : {len(self.state.mcp_names)}")
+        print(f"  policy     : {self.state.policy.path}")
+        print(f"  hooks cfg  : {self.state.hooks.config_path}")
+        if receipt:
+            print(f"  grove      : {receipt.detail}")
+        return False
+
+    def _cmd_sessions(self, arg: str) -> bool:
+        limit = 10
+        if arg.isdigit():
+            limit = max(1, min(100, int(arg)))
+        rows = list_sessions(limit=limit)
+        if not rows:
+            print("  no indexed sessions yet")
+            return False
+        for row in rows:
+            summary = row.first_prompt or "(empty prompt)"
+            print(f"  {row.session_id[:8]}  {row.ended_at}  turns={row.turns}  {summary}")
+        return False
+
+    def _cmd_resume(self, arg: str) -> bool:
+        query = arg.strip()
+        if not query:
+            print("  usage: /resume <session_id_prefix|search_text>")
+            return False
+        matches = search_sessions(query, limit=10)
+        exact = [m for m in matches if m.session_id.startswith(query)]
+        chosen = exact[0] if exact else (matches[0] if matches else None)
+        if chosen is None:
+            print(f"  no session found for: {query}")
+            return False
+        prior = load_session_history(chosen.session_id)
+        if not prior:
+            print(f"  session found but history unavailable: {chosen.session_id}")
+            return False
+        note = f"[System note: resumed context from session {chosen.session_id[:8]}]"
+        self.state.history = [{"role": "user", "content": note}] + prior[-(_MAX_TURNS * 2) :]
+        self.state.resumed_from = chosen.session_id
+        self.state.writer.write_system(note)
+        print(f"  resumed from {chosen.session_id} ({len(prior)} message(s) loaded)")
+        return False
+
+    def _cmd_doctor(self, _arg: str) -> bool:
+        from ratatosk import ollama
+
+        checks = [
+            ("python", sys.version.split()[0]),
+            ("session_dir", str(self.state.writer.path.parent)),
+            ("history_db", str(ensure_history_db())),
+            ("policy_file", str(self.state.policy.path)),
+            ("hooks_file", str(self.state.hooks.config_path)),
+            ("api_key", "set" if bool(os.environ.get("ANTHROPIC_API_KEY")) else "missing"),
+            ("ollama", "up" if ollama.is_available() else "down"),
+            ("mcp", "connected" if self.state.mcp_call is not None else "disabled"),
+        ]
+        for key, value in checks:
+            print(f"  {key:12}: {value}")
+        return False
+
+    def _cmd_export(self, arg: str) -> bool:
+        target = arg or f"{self.state.writer.session_id}.transcript.txt"
+        out = Path(target)
+        if not out.is_absolute():
+            out = Path.cwd() / out
+        out.write_text(_render_transcript(self.state.writer.read_entries()), encoding="utf-8")
+        print(f"  exported: {out}")
+        return False
+
+    def _cmd_permissions(self, arg: str) -> bool:
+        parts = arg.split()
+        if not parts or parts[0] == "list":
+            rules = self.state.policy.load()
+            if not rules:
+                print("  no rules")
+                return False
+            for rule in rules:
+                print(f"  {rule.pattern:20} -> {rule.action}")
+            return False
+        if parts[0] == "set" and len(parts) == 3:
+            self.state.policy.set_rule(parts[1], parts[2])
+            print(f"  rule set: {parts[1]} -> {parts[2]}")
+            return False
+        if parts[0] == "remove" and len(parts) == 2:
+            removed = self.state.policy.remove_rule(parts[1])
+            print("  removed" if removed else "  rule not found")
+            return False
+        print("  usage: /permissions [list|set <pattern> <allow|deny|confirm>|remove <pattern>]")
+        return False
+
+    def _cmd_hooks(self, arg: str) -> bool:
+        parts = arg.split()
+        if not parts or parts[0] == "list":
+            events = self.state.hooks.list_events()
+            if not events:
+                print(f"  no hooks configured ({self.state.hooks.config_path})")
+                return False
+            for event_name, hooks in sorted(events.items()):
+                print(f"  {event_name}: {len(hooks)}")
+            return False
+        if parts[0] == "run" and len(parts) >= 2:
+            event_name = parts[1]
+            results = self.state.hooks.run_event(event_name, {"source": "manual"})
+            if not results:
+                print(f"  no hooks for event: {event_name}")
+                return False
+            for result in results:
+                status = "ok" if result.ok else "fail"
+                print(f"  [{status}] {result.script} {result.output[:120]}")
+            return False
+        print("  usage: /hooks [list|run <EventName>]")
+        return False
+
+    def _cmd_compact(self, arg: str) -> bool:
+        self.state.hooks.run_event("PreCompact", {"instructions": arg or None})
+        before = len(self.state.history)
+        self.state.history, compacted = _compact(self.state.history)
+        if compacted:
+            message = f"[Compacted local history to last {_MAX_TURNS} turns.]"
+            if arg:
+                message += f" [{arg}]"
+            self.state.writer.write_system(message)
+            print("  compacted")
+        else:
+            print("  no compaction needed")
+        self.state.hooks.run_event("PostCompact", {"before": before, "after": len(self.state.history)})
+        return False
+
+    def _cmd_help(self, _arg: str) -> bool:
+        print("  /exit /clear /status /sessions /resume /doctor /export /permissions /hooks /compact")
+        return False
+
+
+def _run_turn(state: RuntimeState, user_input: str) -> None:
+    state.writer.write_user(user_input)
+    state.history.append({"role": "user", "content": user_input})
+
+    if state.args.local:
+        from ratatosk import ollama
+
+        messages = [{"role": "system", "content": state.system_prompt}] + state.history
+        text = ollama.chat(messages, model=state.model)
+        print(text)
+        state.writer.write_assistant(text)
+        state.history.append({"role": "assistant", "content": text})
+        state.history, compacted = _compact(state.history)
+        if compacted:
+            print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
         return
-    try:
-        inp = json.dumps(stdin_data).encode() if stdin_data else None
-        subprocess.run(
-            [sys.executable, str(script)],
-            input=inp,
-            env=os.environ.copy(),
-            timeout=10,
-            capture_output=True,
-            check=False,
-        )
-    except Exception:
-        pass
+
+    while True:
+        response_text = ""
+        with state.client.messages.stream(
+            model=state.model,
+            max_tokens=8192,
+            system=state.system_prompt,
+            messages=state.history,
+            tools=state.all_tools,
+        ) as stream:
+            for chunk in stream.text_stream:
+                print(chunk, end="", flush=True)
+                response_text += chunk
+            final = stream.get_final_message()
+
+        print()
+        assistant_content = final.message.content
+        state.writer.write_assistant(response_text)
+        state.history.append({"role": "assistant", "content": assistant_content})
+        tool_uses = [block for block in assistant_content if getattr(block, "type", None) == "tool_use"]
+        if not tool_uses:
+            state.history, compacted = _compact(state.history)
+            if compacted:
+                print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
+            break
+
+        tool_results = []
+        for tu in tool_uses:
+            result = _tools.prompt_and_dispatch(
+                tu.name,
+                tu.input,
+                state.args.trust,
+                state.mcp_names,
+                state.mcp_call,
+                policy_store=state.policy,
+                hook_runtime=state.hooks,
+            )
+            print(f"  [tool:{tu.name}] → {str(result)[:120]}", flush=True)
+            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
+        state.history.append({"role": "user", "content": tool_results})
 
 
 def main() -> None:
-    import argparse
-
     parser = argparse.ArgumentParser(description="Ratatosk — Willow platform session runtime")
     parser.add_argument("--model", default="claude-sonnet-4-6")
     parser.add_argument("--trust", action="store_true", help="Execute tools without per-call confirmation")
@@ -103,13 +336,15 @@ def main() -> None:
     parser.add_argument("--deposit", action="store_true", help="Write tier-0 session deposit on exit")
     args = parser.parse_args()
 
+    ensure_history_db()
+    policy = PolicyStore()
+    hooks = HookRuntime()
     use_local = args.local
     model = os.environ.get("OLLAMA_MODEL", "llama3.2:1b") if use_local else args.model
 
     mcp_names: set[str] = set()
     mcp_extra_tools: list[dict] = []
     mcp_call = None
-
     if args.mcp:
         print("  [mcp] connecting…", flush=True)
         from ratatosk import mcp_client
@@ -118,7 +353,6 @@ def main() -> None:
         mcp_call = mcp_client.call
         _grove.set_grove_sender(_grove.make_mcp_sender(mcp_call))
         print(f"  [mcp] {len(mcp_names)} tools loaded", flush=True)
-
         if args.listen:
             from ratatosk.listener import BusListener
 
@@ -140,18 +374,29 @@ def main() -> None:
     else:
         client = None
 
-    all_tools = _tools.BASE_TOOLS + mcp_extra_tools
-    system_prompt = _load_system_prompt()
     writer = _session.SessionWriter(cwd=str(Path.cwd()))
-    history: list[dict] = []
-
+    state = RuntimeState(
+        args=args,
+        model=model,
+        writer=writer,
+        history=[],
+        system_prompt=_load_system_prompt(),
+        all_tools=_tools.BASE_TOOLS + mcp_extra_tools,
+        mcp_names=mcp_names,
+        mcp_call=mcp_call,
+        client=client,
+        policy=policy,
+        hooks=hooks,
+    )
+    router = CommandRouter(state)
     start_receipt = _grove.session_started(writer.session_id, model)
+    state.hooks.run_event("SessionStart", {"session_id": writer.session_id, "model": model})
     if not start_receipt.skipped and not start_receipt.ok:
         print(f"  [grove] {start_receipt.detail}", flush=True)
 
     trust_label = "trust=on" if args.trust else "trust=off"
     print(f"\nRatatosk  [{model}]  [{trust_label}]  session:{writer.session_id[:8]}…")
-    print("Type /exit, /status, /clear.\n")
+    print("Type /help for commands.\n")
 
     while True:
         try:
@@ -159,98 +404,36 @@ def main() -> None:
         except (EOFError, KeyboardInterrupt):
             print()
             break
-
         if not user_input:
             continue
-        if user_input == "/exit":
-            break
-        if user_input == "/status":
-            print(f"  session : {writer.session_id}")
-            print(f"  turns   : {len(history) // 2}")
-            print(f"  jsonl   : {writer.path}")
-            receipt = _grove.last_receipt()
-            if receipt:
-                print(f"  grove   : {receipt.detail}")
-            continue
-        if user_input == "/clear":
-            history = []
-            print("  history cleared")
-            continue
         if user_input.startswith("/"):
-            print(f"  unknown command: {user_input}")
+            if router.run(user_input):
+                break
             continue
-
-        writer.write_user(user_input)
-        history.append({"role": "user", "content": user_input})
-
         try:
-            if use_local:
-                from ratatosk import ollama
-
-                messages = [{"role": "system", "content": system_prompt}] + history
-                text = ollama.chat(messages, model=model)
-                print(text)
-                writer.write_assistant(text)
-                history.append({"role": "assistant", "content": text})
-            else:
-                while True:
-                    response_text = ""
-                    with client.messages.stream(
-                        model=model,
-                        max_tokens=8192,
-                        system=system_prompt,
-                        messages=history,
-                        tools=all_tools,
-                    ) as stream:
-                        for chunk in stream.text_stream:
-                            print(chunk, end="", flush=True)
-                            response_text += chunk
-                        final = stream.get_final_message()
-
-                    print()
-                    assistant_content = final.message.content
-                    writer.write_assistant(response_text)
-                    history.append({"role": "assistant", "content": assistant_content})
-
-                    tool_uses = [b for b in assistant_content if getattr(b, "type", None) == "tool_use"]
-                    if not tool_uses:
-                        history, compacted = _compact(history)
-                        if compacted:
-                            print(f"  [compacted — keeping last {_MAX_TURNS} turns]", flush=True)
-                        break
-
-                    tool_results = []
-                    for tu in tool_uses:
-                        result = _tools.prompt_and_dispatch(
-                            tu.name, tu.input, args.trust, mcp_names, mcp_call
-                        )
-                        print(f"  [tool:{tu.name}] → {str(result)[:120]}", flush=True)
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tu.id,
-                                "content": str(result),
-                            }
-                        )
-                    history.append({"role": "user", "content": tool_results})
-
+            _run_turn(state, user_input)
         except Exception as exc:
             print(f"\nERROR: {exc}")
-            continue
 
     if args.mcp:
         from ratatosk import mcp_client
 
         mcp_client.shutdown()
 
-    end_receipt = _grove.session_ended(writer.session_id, len(history) // 2, str(writer.path))
+    end_receipt = _grove.session_ended(writer.session_id, len(state.history) // 2, str(writer.path))
+    state.hooks.run_event("SessionEnd", {"session_id": writer.session_id, "turns": len(state.history) // 2})
     if not end_receipt.skipped and not end_receipt.ok:
         print(f"  [grove] {end_receipt.detail}", flush=True)
-
     if args.deposit:
         deposit = _sync.write_deposit(writer)
         print(f"  [deposit] {deposit}")
-
+    index_session(
+        session_id=writer.session_id,
+        cwd=writer.cwd,
+        model=model,
+        jsonl_path=writer.path,
+        resumed_from=state.resumed_from,
+    )
     print(f"Session written: {writer.path}")
 
 

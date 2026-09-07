@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
 
 from ratatosk.capabilities import ActionResult, CapabilityGate
+from ratatosk.hooks import HookRuntime
+from ratatosk.policy import PolicyStore
 from ratatosk.protocol.envelope import Intent, build_envelope
 
 BASH_TOOL = {
@@ -100,7 +103,35 @@ def _bash_allowed(command: str, trusted: bool) -> tuple[bool, str]:
     return True, ""
 
 
-def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool = False) -> object:
+def dispatch(
+    name: str,
+    inputs: dict,
+    mcp_names: set,
+    mcp_call,
+    *,
+    trusted: bool = False,
+    policy_store: PolicyStore | None = None,
+    hook_runtime: HookRuntime | None = None,
+) -> object:
+    tool_use_id = str(uuid.uuid4())
+    if hook_runtime is not None:
+        hook_runtime.run_event(
+            "PreTool",
+            {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+        )
+
+    if policy_store is not None:
+        decision = policy_store.decide(name)
+        if decision == "deny":
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PermissionDenied",
+                    {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+                )
+            return json.dumps({"error": f"policy denied tool: {name}"})
+        if decision == "allow":
+            trusted = True
+
     if name == "Bash":
         cmd = inputs.get("command", "")
         allowed, reason = _bash_allowed(cmd, trusted)
@@ -120,7 +151,13 @@ def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool
                 text=True,
                 timeout=_BASH_TIMEOUT,
             )
-            return (result.stdout + result.stderr).strip() or "(no output)"
+            output = (result.stdout + result.stderr).strip() or "(no output)"
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PostTool",
+                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
+                )
+            return output
         except subprocess.TimeoutExpired:
             return f"ERROR: command timed out ({_BASH_TIMEOUT}s)"
         except Exception as exc:
@@ -129,7 +166,13 @@ def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool
     if name == "Read":
         path = inputs.get("file_path", "") or inputs.get("path", "")
         try:
-            return Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ]
+            output = Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ]
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PostTool",
+                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
+                )
+            return output
         except Exception as exc:
             return f"ERROR: {exc}"
 
@@ -140,7 +183,13 @@ def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool
             target = Path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
-            return f"Written {len(content)} chars to {path}"
+            output = f"Written {len(content)} chars to {path}"
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PostTool",
+                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
+                )
+            return output
         except Exception as exc:
             return f"ERROR: {exc}"
 
@@ -156,7 +205,13 @@ def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool
             if count > 1:
                 return f"ERROR: old_string matches {count} times — must be unique"
             Path(path).write_text(text.replace(old, new, 1), encoding="utf-8")
-            return f"Edited {path}"
+            output = f"Edited {path}"
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PostTool",
+                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
+                )
+            return output
         except Exception as exc:
             return f"ERROR: {exc}"
 
@@ -167,12 +222,24 @@ def dispatch(name: str, inputs: dict, mcp_names: set, mcp_call, *, trusted: bool
         cwd = inputs.get("cwd", "") or str(Path.cwd())
         try:
             matches = sorted(_glob.glob(pattern, root_dir=cwd, recursive=True))
-            return "\n".join(matches) if matches else "(no matches)"
+            output = "\n".join(matches) if matches else "(no matches)"
+            if hook_runtime is not None:
+                hook_runtime.run_event(
+                    "PostTool",
+                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
+                )
+            return output
         except Exception as exc:
             return f"ERROR: {exc}"
 
     if name in mcp_names and mcp_call is not None:
-        return mcp_call(name, inputs)
+        output = mcp_call(name, inputs)
+        if hook_runtime is not None:
+            hook_runtime.run_event(
+                "PostTool",
+                {"tool_name": name, "tool_input": inputs, "tool_output": str(output), "tool_use_id": tool_use_id},
+            )
+        return output
 
     return f"[stub] tool '{name}' not wired. inputs={json.dumps(inputs)[:120]}"
 
@@ -183,7 +250,12 @@ def prompt_and_dispatch(
     trusted: bool,
     mcp_names: set,
     mcp_call,
+    policy_store: PolicyStore | None = None,
+    hook_runtime: HookRuntime | None = None,
 ) -> object:
+    if policy_store is not None and policy_store.decide(name) == "allow":
+        trusted = True
+
     if not trusted:
         summary = json.dumps(inputs, ensure_ascii=False)[:200]
         print(f"\n  [tool:{name}] {summary}")
@@ -193,4 +265,12 @@ def prompt_and_dispatch(
             answer = ""
         if answer != "y":
             return json.dumps({"error": "user denied"})
-    return dispatch(name, inputs, mcp_names, mcp_call, trusted=trusted)
+    return dispatch(
+        name,
+        inputs,
+        mcp_names,
+        mcp_call,
+        trusted=trusted,
+        policy_store=policy_store,
+        hook_runtime=hook_runtime,
+    )
