@@ -15,6 +15,7 @@ from ratatosk import tools as _tools
 from ratatosk.history import ensure_history_db, index_session, list_sessions, load_session_history, search_sessions
 from ratatosk.hooks import HookRuntime
 from ratatosk.policy import PolicyStore
+from ratatosk.redact import redact
 
 _HOME = Path.home()
 _MAX_TURNS = 20
@@ -73,21 +74,52 @@ def _load_system_prompt() -> str:
     return "\n\n---\n\n".join(parts) if parts else "You are Ratatosk — platform session runtime."
 
 
+def _credential_files() -> list[Path]:
+    return [_HOME / ".ratatosk" / "credentials.json", _WILLOW_ROOT / "credentials.json"]
+
+
 def _load_api_key() -> str:
+    """Return the key. The environment is a *source*, never a destination.
+
+    This used to write a file-loaded key back into ``os.environ``, which handed
+    it to every subprocess ratatosk spawns. The value now goes straight to its
+    one call site — `anthropic.Anthropic(api_key=...)` — the way willow-mcp's
+    `integrations.credential()` does it.
+    """
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
         return key
-    for candidate in [_HOME / ".ratatosk" / "credentials.json", _WILLOW_ROOT / "credentials.json"]:
+    for candidate in _credential_files():
         if candidate.exists():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
                 key = data.get("ANTHROPIC_API_KEY", "")
                 if key:
-                    os.environ["ANTHROPIC_API_KEY"] = key
                     return key
             except Exception:
                 pass
     return ""
+
+
+def credential_source() -> str:
+    """Where the key comes from — never the key itself.
+
+    `/doctor` used to answer this by reading `os.environ`, which only worked
+    because `_load_api_key` had written to it. It reports provenance now, which
+    is more useful anyway: "set" never distinguished a key from the shell from
+    one out of a credentials file.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "env:ANTHROPIC_API_KEY"
+    for candidate in _credential_files():
+        if candidate.exists():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                if data.get("ANTHROPIC_API_KEY"):
+                    return f"file:{candidate}"
+            except Exception:
+                continue
+    return "missing"
 
 
 def _render_transcript(entries: list[dict]) -> str:
@@ -98,7 +130,7 @@ def _render_transcript(entries: list[dict]) -> str:
         if isinstance(content, list):
             content = str(content)
         lines.append(f"{role}: {content}")
-    return "\n\n".join(lines)
+    return redact("\n\n".join(lines))
 
 
 @dataclass
@@ -207,7 +239,7 @@ class CommandRouter:
             ("history_db", str(ensure_history_db())),
             ("policy_file", str(self.state.policy.path)),
             ("hooks_file", str(self.state.hooks.config_path)),
-            ("api_key", "set" if bool(os.environ.get("ANTHROPIC_API_KEY")) else "missing"),
+            ("api_key", credential_source()),
             ("ollama", "up" if ollama.is_available() else "down"),
             ("mcp", "connected" if self.state.mcp_call is not None else "disabled"),
         ]

@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ratatosk.child_env import child_env
 from ratatosk.paths import ratatosk_data_root
 
 
@@ -52,6 +53,7 @@ class HookRuntime:
                     capture_output=True,
                     timeout=timeout_s,
                     check=False,
+                    env=child_env(),
                 )
                 out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace").strip()
                 results.append(HookResult(script=script, ok=proc.returncode == 0, output=out))
