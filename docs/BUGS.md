@@ -40,6 +40,26 @@
   dropped. The API rejects that, so a long tool-heavy session fails at the point
   compaction first triggers.
 
+- **An interrupt during a turn destroys the session record.** `_run_turn` is
+  wrapped in `except Exception` (`ratatosk/crown.py:415`), and
+  `KeyboardInterrupt` is a `BaseException`. A Ctrl-C mid-turn therefore
+  propagates out of the REPL loop entirely, skipping `mcp_client.shutdown()`,
+  `session_ended`, the `SessionEnd` hook, the `--deposit` write, and
+  `index_session`. The JSONL survives because it is written per entry, but it is
+  never indexed — so `/sessions` and `/resume` cannot see it, and the tier-0
+  deposit never happens. The moment you most want to interrupt is the one that
+  costs you the session. The cleanup block wants to be a `try`/`finally`, and
+  the interrupt wants catching so the turn can be abandoned without the session
+  being abandoned with it.
+
+- **`dispatch()` returns three different error shapes.**
+  `json.dumps({"error": ...})` for policy denial and user denial, a bare
+  `f"ERROR: {exc}"` for every tool failure, and `f"[stub] tool '{name}' not
+  wired"` for an unknown tool (`ratatosk/tools.py`). The model cannot reliably
+  distinguish "I called this wrongly" from "the tool broke" from "that tool does
+  not exist" — three situations with three different next moves. One shape,
+  carrying a machine-readable kind.
+
 - **The API key is handed to every subprocess.** `_load_api_key`
   (`ratatosk/crown.py:66`) reads a key out of a credentials file and writes it
   into `os.environ`. Neither the Bash tool (`ratatosk/tools.py:147`) nor the

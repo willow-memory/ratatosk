@@ -1,5 +1,114 @@
 # Ideas Backlog
 
+The flat list below is the raw queue. This section is the part with an argument
+attached — what a mature agent harness does well, filtered to what actually
+suits a 2200-line stdlib session runtime that has to keep working on a phone.
+Several of these develop a one-liner already in the backlog; those are noted.
+
+---
+
+## The tool result is a prompt
+
+The largest quality lever here, and the cheapest. Tool output is not plumbing —
+it is the majority of what the model reads, and every result either improves the
+next decision or degrades it. Today ours are written as if a human were the only
+reader.
+
+- **`Read` should return numbered lines.** Costs nothing, and it makes `Edit`'s
+  `old_string` reliable, lets the model cite `file:line`, and makes a partial
+  read coherent rather than a floating fragment.
+- **`Edit` should return the changed region**, a few lines of context either
+  side — not `"Edited {path}"`. The model has just modified a file and has no
+  idea what it now says, so it either re-reads (a wasted turn and more context
+  spent) or proceeds blind.
+- **Errors should be actionable, not merely true.** `ERROR: [Errno 2] No such
+  file or directory` gives the model nothing to do differently. The good version
+  is already in the tree: `old_string matches 3 times — must be unique` states
+  the fault *and* the remedy. That is the bar for the rest.
+
+Related backlog entries: *tool execution receipts*, *rich `/status`*.
+
+## Read-before-Edit, and staleness
+
+Nothing currently stops the model editing a file it never read — it can invent
+an `old_string`, and if it happens to match, the edit lands. Nothing detects
+that a file changed on disk since the model read it, so a long session can edit
+stale content silently.
+
+Record `(path -> mtime, size)` when `Read` succeeds; have `Edit` refuse when
+there is no record, or the record is stale. The uniqueness check we already have
+is half of this — it catches ambiguity, not blindness. One guarantee, in one
+place that cannot be reached around.
+
+Develops: *file operation guardrails*.
+
+## Interruptibility as a feature
+
+Stopping a turn mid-flight and redirecting *without losing the session* is the
+clearest line between a toy REPL and something worth leaving running. It matters
+most on a phone, watching a slow local model produce something wrong.
+
+This is also a live defect — see `BUGS.md`, "an interrupt during a turn
+destroys the session record."
+
+Develops: *crash recovery mode*.
+
+## Sub-turns for context isolation
+
+The highest-value thing to *add* rather than fix. Spawn a narrow task with its
+own history and return only its conclusion to the parent, leaving the parent's
+context clean.
+
+This matters **more** under BYOK, not less. A free-tier model with an 8k–32k
+window cannot hold a long task, but it can certainly answer "grep for X, tell me
+which file" in one line. Given the provider seam (`docs/prior-art.md` → PR 3), a
+`Task` tool is a sub-loop with a fresh history and a summarising return.
+
+## Externalized plan state
+
+What compaction destroys is *intent*. The notice reads "compacted 40 earlier
+messages" and the goal leaves with them. A small structured task list that the
+model maintains and that is re-injected each turn survives compaction by
+construction, because it was never in the transcript to begin with.
+
+Develops: *better compaction strategy*, *session tags and metadata*.
+
+## Two places we could be better than the large harnesses
+
+Both follow from BYOK, and the big products are mostly weak here because they
+assume a single provider.
+
+- **Degrade mid-loop, and say so.** A 429 should fall through to the next
+  provider *during* a tool loop, not only at session start — and the model
+  should be told it happened. A smaller model behaves better when it knows it is
+  the smaller model.
+- **Context budget is per-provider.** `_MAX_CHARS = 200_000` is one global
+  constant. Against an 8k-token free model that is not a budget, it is a
+  fiction. The window belongs in the provider registry beside `supports_tools`.
+
+Develops: *local-first model fallback chain*, *multi-model routing policy*.
+
+## Two cheap wins alongside those
+
+- **Prompt caching** where the provider supports it — the system prompt and tool
+  schemas are the stable prefix, and it is a large cost cut on the providers that
+  offer it. Another per-provider capability flag.
+- **Telemetry that reports the number which actually matters on a free tier:**
+  not dollars, but requests remaining before the rate limit.
+
+Develops: *cost and token telemetry*.
+
+## Deliberately not doing
+
+Repo-wide auto-context gathering and RAG over the codebase. Expensive, and it is
+the corpus's job and Nestor's — this is the session process, not the memory.
+Likewise elaborate diff UIs. The 2200 lines are a feature; most of what makes a
+large harness large is surface we do not want.
+
+---
+
+## Backlog
+
 - Session replay command: rebuild a readable transcript from JSONL with filters (`--session`, `--since`, `--tool-only`).
 - `/resume` command: pick up prior session context from latest JSONL/deposit automatically.
 - Safer shell execution tiers: allowlist low-risk commands, stricter confirmation for risky patterns.
