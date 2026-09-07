@@ -1,5 +1,28 @@
+import pytest
+
 from ratatosk.listener import BusListener
 from ratatosk.protocol.envelope import Intent
+
+
+def test_listener_refuses_unset_channel(monkeypatch):
+    """No implicit "general". grove.send() treats an unset channel as disabled;
+    the listener used to fall back to "general", so an unconfigured node
+    listened on a channel nobody chose while refusing to post to it."""
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    with pytest.raises(ValueError, match="grove channel unset"):
+        BusListener(mcp_call=None)
+
+
+def test_listener_reads_channel_from_env(monkeypatch):
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "env-channel")
+    listener = BusListener(mcp_call=None)
+    assert listener.channel == "env-channel"
+
+
+def test_listener_explicit_channel_beats_env(monkeypatch):
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "env-channel")
+    listener = BusListener(channel="explicit", mcp_call=None)
+    assert listener.channel == "explicit"
 
 
 def test_listener_rejects_wrong_node():

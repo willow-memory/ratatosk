@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ratatosk import ollama
+from ratatosk import grove, ollama
 from ratatosk.capabilities import ActionResult, CapabilityGate
 from ratatosk.mcp_client import MCP_ERROR_PREFIX
 from ratatosk.protocol.envelope import Envelope, Intent, parse_grove_message, validate_envelope
@@ -60,7 +60,15 @@ class BusListener:
         poll_interval: float = 2.0,
     ):
         self.node = node or os.environ.get("WILLOW_AGENT_NAME", "ratatosk")
-        self.channel = channel or os.environ.get("RATATOSK_GROVE_CHANNEL", "general")
+        # Same reader as grove.send(), and the same answer. This used to fall
+        # back to "general", so an unconfigured box listened on a channel
+        # nobody chose while grove.send() refused to post at all — the node
+        # was half-present on a bus it had never been pointed at.
+        self.channel = channel or grove.channel_env()
+        if not self.channel:
+            raise ValueError(
+                "grove channel unset — set RATATOSK_GROVE_CHANNEL or pass channel="
+            )
         self.mcp_call = mcp_call
         self.poll_interval = poll_interval
         self.state = ListenerState(node=self.node, channel=self.channel)
