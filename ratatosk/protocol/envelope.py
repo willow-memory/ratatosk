@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -13,7 +14,11 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 DEFAULT_TTL_SECONDS = 300
-_SEEN_NONCES: set[str] = set()
+#: Nonces already accepted, oldest first. An OrderedDict rather than a set
+#: because eviction has to be FIFO: `set.pop()` removes an arbitrary element,
+#: so at the cap a nonce seen seconds ago could be dropped while stale ones
+#: survived — and a dropped nonce is a replay that will be accepted again.
+_SEEN_NONCES: "OrderedDict[str, None]" = OrderedDict()
 _MAX_SEEN = 10_000
 
 
@@ -103,12 +108,18 @@ def _parse_iso(ts: str) -> datetime | None:
 
 
 def _remember_nonce(nonce: str) -> bool:
+    """Record a nonce. False when it has been seen before.
+
+    Eviction is FIFO — oldest out first — so the cache always holds the most
+    recent _MAX_SEEN nonces. The previous `set.pop()` evicted arbitrarily, which
+    meant a recent nonce could be discarded while stale ones stayed, and a
+    discarded nonce is one that will be accepted a second time.
+    """
     if nonce in _SEEN_NONCES:
         return False
-    _SEEN_NONCES.add(nonce)
-    if len(_SEEN_NONCES) > _MAX_SEEN:
-        for _ in range(_MAX_SEEN // 2):
-            _SEEN_NONCES.pop()
+    _SEEN_NONCES[nonce] = None
+    while len(_SEEN_NONCES) > _MAX_SEEN:
+        _SEEN_NONCES.popitem(last=False)
     return True
 
 
@@ -265,8 +276,14 @@ def validate_envelope(
     if env.intent in {i.value for i in HIGH_RISK_INTENTS} and not env.requires_confirm:
         errors.append(f"intent {env.intent} requires confirmation")
 
-    if check_replay and env.nonce:
-        if not _remember_nonce(env.nonce):
+    if check_replay:
+        # A missing nonce used to skip the check entirely, so replay protection
+        # was opt-out by omission: anyone could disable it by leaving the field
+        # off. `build_envelope` always mints one, so an envelope without a nonce
+        # is either malformed or hand-made to evade this.
+        if not env.nonce:
+            errors.append("missing nonce (replay protection cannot be applied)")
+        elif not _remember_nonce(env.nonce):
             errors.append("replay detected (duplicate nonce)")
 
     return ValidationResult(ok=not errors, errors=errors, envelope=env)

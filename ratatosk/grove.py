@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 from ratatosk.mcp_client import MCP_ERROR_PREFIX
 
-_CHANNEL = os.environ.get("RATATOSK_GROVE_CHANNEL", "")
 _SENDER = os.environ.get("WILLOW_AGENT_NAME", "ratatosk")
 _last_receipt: GroveReceipt | None = None
 _grove_sender: Callable[[str], "GroveReceipt"] | None = None
@@ -36,9 +35,20 @@ def _record(receipt: GroveReceipt) -> GroveReceipt:
     return receipt
 
 
+def channel_env() -> str:
+    """The Grove channel, read now rather than at import.
+
+    This module used to capture `_CHANNEL` at import while `send()` re-read the
+    variable at call time. Setting the channel after import therefore passed
+    `send()`'s guard and then posted to `""` through `make_mcp_sender`, which had
+    bound the import-time value. One reader, one answer.
+    """
+    return os.environ.get("RATATOSK_GROVE_CHANNEL", "")
+
+
 def send(content: str) -> GroveReceipt:
-    channel = os.environ.get("RATATOSK_GROVE_CHANNEL", "")
-    if not channel:
+    chan = channel_env()
+    if not chan:
         return _record(GroveReceipt(ok=True, detail="grove disabled (RATATOSK_GROVE_CHANNEL unset)", skipped=True))
     if _grove_sender is None:
         return _record(
@@ -83,15 +93,23 @@ def _failure_detail(result) -> str | None:
 
 
 def make_mcp_sender(mcp_call, *, channel: str | None = None, app_id: str | None = None):
-    channel = channel or _CHANNEL
+    # Resolved per send, not bound at construction: a sender built before the
+    # channel is set must not keep posting to "".
+    fixed_channel = channel
     app_id = app_id or os.environ.get("RATATOSK_APP_ID", "ratatosk")
 
     def _send(content: str) -> GroveReceipt:
+        chan = fixed_channel or channel_env()
+        if not chan:
+            return GroveReceipt(
+                ok=False,
+                detail="grove channel unset — set RATATOSK_GROVE_CHANNEL or pass channel=",
+            )
         result = mcp_call(
             "grove_send_message",
             {
                 "app_id": app_id,
-                "channel_name": channel,
+                "channel_name": chan,
                 "content": content,
                 "sender": _SENDER,
             },
@@ -99,7 +117,7 @@ def make_mcp_sender(mcp_call, *, channel: str | None = None, app_id: str | None 
         detail = _failure_detail(result)
         if detail is not None:
             return GroveReceipt(ok=False, detail=detail)
-        return GroveReceipt(ok=True, detail=f"posted to {channel}")
+        return GroveReceipt(ok=True, detail=f"posted to {chan}")
 
     return _send
 
