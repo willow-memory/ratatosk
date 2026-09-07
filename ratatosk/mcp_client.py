@@ -1,4 +1,10 @@
-"""MCP stdio client — defaults to willow-mcp, not archived sap paths."""
+"""MCP stdio client — defaults to willow-mcp, not archived sap paths.
+
+Field names differ across mcp SDK majors: 1.x exposes ``Tool.inputSchema`` and
+``CallToolResult.isError``, 2.x renames the Python attributes to
+``input_schema`` and ``is_error`` (the wire aliases are unchanged). Read both,
+so one venv upgrade does not silently sever the fleet.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +14,8 @@ import shlex
 import sys
 import threading
 from pathlib import Path
+
+MCP_ERROR_PREFIX = "[mcp-error]"
 
 _mcp_session = None
 _mcp_loop: asyncio.AbstractEventLoop | None = None
@@ -68,24 +76,39 @@ def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
             {
                 "name": tool.name,
                 "description": tool.description or "",
-                "input_schema": tool.inputSchema,
+                "input_schema": _tool_schema(tool),
             }
         )
         names.add(tool.name)
     return anthropic_tools, names
 
 
+def _tool_schema(tool) -> dict:
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    return schema or {}
+
+
+def _is_error(result) -> bool:
+    flag = getattr(result, "is_error", None)
+    if flag is None:
+        flag = getattr(result, "isError", None)
+    return bool(flag)
+
+
 def call(name: str, inputs: dict) -> str:
     try:
         result = _mcp_call_sync(_mcp_session.call_tool(name, inputs))
-        if result.isError:
-            return f"[mcp-error] {result.content}"
+        if _is_error(result):
+            return f"{MCP_ERROR_PREFIX} {result.content}"
         parts = [chunk.text for chunk in result.content if hasattr(chunk, "text")]
         return "\n".join(parts) if parts else json.dumps(str(result.content))
     except Exception as exc:
-        return f"[mcp-error] {exc}"
+        return f"{MCP_ERROR_PREFIX} {exc}"
 
 
 def shutdown() -> None:
     if _mcp_stop_event is not None and _mcp_loop is not None:
-        asyncio.run_coroutine_threadsafe(_mcp_stop_event.set(), _mcp_loop)
+        # Event.set is a plain callable, not a coroutine function.
+        _mcp_loop.call_soon_threadsafe(_mcp_stop_event.set)
