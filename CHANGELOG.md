@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.5](https://github.com/willow-memory/ratatosk/compare/v1.2.4...v1.2.5) (2026-09-07)
+
+
+### Fixed
+
+* **tools:** every verdict goes through one chokepoint ([8d793d9](https://github.com/willow-memory/ratatosk/commit/8d793d9ec14b0ee98329e2086570f03d262a238e))
+* **tools:** every verdict goes through one chokepoint ([#11](https://github.com/willow-memory/ratatosk/issues/11)) ([9bdc833](https://github.com/willow-memory/ratatosk/commit/9bdc8337e97700056ac91db360ce73df2c98e14f))
+
 ## [1.2.4](https://github.com/willow-memory/ratatosk/compare/v1.2.3...v1.2.4) (2026-09-07)
 
 
