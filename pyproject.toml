@@ -29,7 +29,7 @@ dependencies = []
 cloud = ["anthropic>=0.40"]
 mcp = ["mcp>=1.0,<3"]
 local = ["requests>=2.31"]
-dev = ["pytest>=8", "willow-ratatosk[cloud,mcp,local]"]
+dev = ["pytest>=8", "pyyaml>=6", "willow-ratatosk[cloud,mcp,local]"]
 
 [project.scripts]
 ratatosk = "ratatosk.crown:main"
