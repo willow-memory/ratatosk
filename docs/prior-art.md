@@ -421,6 +421,16 @@ proxy; offer `/v1/messages/count_tokens` as an opt-in exact measure when the
 
 ### PR 5 — Hooks (BUGS: hooks and events)
 
+**Scope grew.** See [`design/hooks-catch-and-redirect.md`](design/hooks-catch-and-redirect.md)
+— proposed, unsigned. In short: hooks split into two tiers by whether a single
+silent success is recoverable in-session. Irreversible actions get a hard gate
+outside the context window with a *generic* refusal; everything else gets
+spotlighted, last-position, structured-not-verbose context injection. `PreTool`
+gains a context return alongside its verdict. Hook config becomes
+write-protected against the agent, and hostile Unicode is rejected at parse
+time. The mechanics below stand; the tier model sits above them.
+
+
 **Exit code 2 is the only "deliberate block."** Any other nonzero means the
 hook crashed. Conflating the two means a broken hook silently denies — this
 distinction is the single most important thing to take from Claude Code's hook

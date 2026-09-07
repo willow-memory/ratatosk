@@ -17,14 +17,18 @@ reader.
 - **`Read` should return numbered lines.** Costs nothing, and it makes `Edit`'s
   `old_string` reliable, lets the model cite `file:line`, and makes a partial
   read coherent rather than a floating fragment.
-- **`Edit` should return the changed region**, a few lines of context either
-  side — not `"Edited {path}"`. The model has just modified a file and has no
-  idea what it now says, so it either re-reads (a wasted turn and more context
-  spent) or proceeds blind.
+- **`Edit` should verify, then report briefly** — not `"Edited {path}"`, which
+  is a mutating operation returning zero information about its effect. The
+  measured finding is *verification*: SWE-agent's edit command rejects a
+  syntactically broken edit and says why, worth +3.0 points in their ablation.
+  Report a short before/after of the changed region, **not a unified diff** —
+  aider's benchmarks found diff formats help strong models and actively hurt
+  weak ones, and weak models are this project's target.
 - **Errors should be actionable, not merely true.** `ERROR: [Errno 2] No such
   file or directory` gives the model nothing to do differently. The good version
   is already in the tree: `old_string matches 3 times — must be unique` states
-  the fault *and* the remedy. That is the bar for the rest.
+  the fault *and* the remedy. That is the bar for the rest — as prose, not as a
+  machine-readable taxonomy; see `docs/design/hooks-catch-and-redirect.md`.
 
 Related backlog entries: *tool execution receipts*, *rich `/status`*.
 

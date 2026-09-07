@@ -3,11 +3,11 @@
 ## Correctness and safety
 
 - **The listener answers its own messages.** `BusListener.run_once`
-  (`ratatosk/listener.py:121`) filters incoming messages on `id > cursor` and
+  (`ratatosk/listener.py:147`) filters incoming messages on `id > cursor` and
   nothing else — there is no `sender != self.node` check. `parse_grove_message`
   (`ratatosk/protocol/envelope.py:229`) turns any message that is neither JSON
   nor `name: prompt` into a chat envelope addressed to the default node, so a
-  reply posted at `listener.py:90` is re-fetched on the next poll, parsed as a
+  reply posted at `listener.py:115` is re-fetched on the next poll, parsed as a
   fresh prompt for this node, and answered. Replay detection does not catch it:
   the self-parse mints a new nonce via `build_envelope`. On a live Grove channel
   under `--mcp --listen` this is an unbounded reply loop. `termux/boot/
@@ -57,8 +57,14 @@
   `f"ERROR: {exc}"` for every tool failure, and `f"[stub] tool '{name}' not
   wired"` for an unknown tool (`ratatosk/tools.py`). The model cannot reliably
   distinguish "I called this wrongly" from "the tool broke" from "that tool does
-  not exist" — three situations with three different next moves. One shape,
-  carrying a machine-readable kind.
+  not exist" — three situations with three different next moves.
+
+  One shape, and — on the evidence — **prose stating the fault and the remedy**,
+  not a machine-readable error taxonomy. The model in front of these strings is
+  a language model, and rigid structured formats measurably cost accuracy by
+  making it parse a schema while it reasons. `"old_string matches 3 times — must
+  be unique"`, already in this file, is the target shape. See
+  `docs/design/hooks-catch-and-redirect.md` → *The tool-result standard*.
 
 - **The API key is handed to every subprocess.** `_load_api_key`
   (`ratatosk/crown.py:66`) reads a key out of a credentials file and writes it
