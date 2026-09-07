@@ -12,6 +12,8 @@ working set, tier-0 deposit sync.
 ## Install
 
 ```bash
+pip install "willow-ratatosk[mcp,cloud,local]"
+# development
 pip install -e ".[dev]"
 ```
 

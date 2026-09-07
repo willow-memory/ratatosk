@@ -1,26 +1,45 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ratatosk-meaning"
-version = "1.1.0"
-description = "Willow platform session runtime — MCP client, capability gate, tier-0 sync"
+name = "willow-ratatosk"
+dynamic = ["version"]
+description = "Willow platform session runtime — MCP client, capability gate, JSONL sessions, Grove bus, tier-0 sync"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Sean Campbell" }]
-keywords = ["willow", "mcp", "agent", "session", "local-first"]
+keywords = ["willow", "mcp", "agent", "session", "local-first", "ratatosk"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = []
 
 [project.optional-dependencies]
 cloud = ["anthropic>=0.40"]
 mcp = ["mcp>=1.0,<3"]
 local = ["requests>=2.31"]
-dev = ["pytest>=8", "ratatosk-meaning[cloud,mcp,local]"]
+dev = ["pytest>=8", "willow-ratatosk[cloud,mcp,local]"]
 
 [project.scripts]
 ratatosk = "ratatosk.crown:main"
+
+[project.urls]
+Homepage = "https://github.com/willow-memory/ratatosk"
+Repository = "https://github.com/willow-memory/ratatosk"
+Issues = "https://github.com/willow-memory/ratatosk/issues"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ratatosk"]

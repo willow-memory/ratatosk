@@ -1,0 +1,66 @@
+name: Release
+
+# Publishes to PyPI when a version tag is pushed (e.g. `git tag v1.2.0 && git push origin v1.2.0`).
+#
+# Auth: Trusted Publishing (OIDC). Register on PyPI as:
+#   project: willow-ratatosk
+#   repository: willow-memory/ratatosk
+#   workflow: release.yml
+#   environment: pypi
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build hatch-vcs
+          python -m build
+
+      - name: Assert the tag matches the built version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built="$(ls dist/*.tar.gz | sed -E 's|.*/willow-ratatosk-(.+)\.tar\.gz|\1|')"
+          echo "tag=${tag}  built=${built}"
+          if [ "$tag" != "$built" ]; then
+            echo "::error::tag v${tag} builds version ${built} — refusing to publish"
+            exit 1
+          fi
+
+      - name: Check metadata
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

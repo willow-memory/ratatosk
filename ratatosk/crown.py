@@ -368,7 +368,7 @@ def main() -> None:
         try:
             import anthropic
         except ImportError:
-            print("ERROR: pip install ratatosk-meaning[cloud]")
+            print("ERROR: pip install 'willow-ratatosk[cloud]'")
             sys.exit(1)
         client = anthropic.Anthropic(api_key=api_key)
     else:

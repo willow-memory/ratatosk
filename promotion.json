@@ -9,5 +9,5 @@
   "semantic_seam": "ratatosk.capabilities:CapabilityGate",
   "host_repointed": true,
   "major": "python",
-  "notes": "Platform session runtime on willow-memory. Host consumes ratatosk-meaning package; playground launcher remains at apps/ratatosk."
+  "notes": "Platform session runtime on willow-memory. Host consumes willow-ratatosk from PyPI; playground launcher remains at apps/ratatosk."
 }
