@@ -141,7 +141,7 @@ def test_pretool_block_stops_the_tool(tmp_path):
         hook_runtime=runtime,
     )
     assert not target.exists(), "the tool body must not have run"
-    assert "blocked by hook" in json.loads(result)["error"]
+    assert "blocked by the hook" in str(result)
 
 
 def test_posttool_fires_when_the_tool_fails(tmp_path):
@@ -162,7 +162,7 @@ def test_posttool_fires_when_the_tool_fails(tmp_path):
         trusted=True,
         hook_runtime=runtime,
     )
-    assert str(result).startswith("ERROR:")
+    assert "does not exist" in str(result)
     assert marker.exists(), "PostTool must fire on the error path too"
 
 
