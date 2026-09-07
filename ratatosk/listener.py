@@ -1,6 +1,7 @@
 """Grove bus listener — MCP-backed task receive."""
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable
@@ -9,6 +10,7 @@ from typing import Any
 
 from ratatosk import ollama
 from ratatosk.capabilities import ActionResult, CapabilityGate
+from ratatosk.mcp_client import MCP_ERROR_PREFIX
 from ratatosk.protocol.envelope import Envelope, Intent, parse_grove_message, validate_envelope
 from ratatosk.traces import log_trace
 
@@ -23,6 +25,29 @@ class ListenerState:
     cursor: int = 0
     gate: CapabilityGate = field(default_factory=CapabilityGate)
     handlers: dict[str, Handler] = field(default_factory=dict)
+
+
+def _as_messages(result: Any) -> list[dict[str, Any]]:
+    """Normalise a grove_get_history result into a message list.
+
+    ``mcp_client.call`` returns a *string*, so the previous ``isinstance(result,
+    str): return []`` guard made every poll return nothing and the listener a
+    permanent no-op. Decode the JSON; a transport error or an error payload
+    yields no messages, but a real page of history now gets through.
+    """
+    if isinstance(result, str):
+        text = result.strip()
+        if not text or text.startswith(MCP_ERROR_PREFIX):
+            return []
+        try:
+            result = json.loads(text)
+        except ValueError:
+            return []
+    if isinstance(result, dict):
+        if result.get("error"):
+            return []
+        result = result.get("result", result.get("messages"))
+    return result if isinstance(result, list) else []
 
 
 class BusListener:
@@ -91,7 +116,7 @@ class BusListener:
                     "grove_send_message",
                     {
                         "app_id": os.environ.get("RATATOSK_APP_ID", "ratatosk"),
-                        "channel": env.reply_channel or self.channel,
+                        "channel_name": env.reply_channel or self.channel,
                         "content": response,
                         "sender": self.node,
                     },
@@ -109,14 +134,11 @@ class BusListener:
             "grove_get_history",
             {
                 "app_id": os.environ.get("RATATOSK_APP_ID", "ratatosk"),
-                "channel": self.channel,
+                "channel_name": self.channel,
                 "limit": 20,
             },
         )
-        if isinstance(result, str):
-            return []
-        messages = result.get("messages") if isinstance(result, dict) else result
-        return messages or []
+        return _as_messages(result)
 
     def run_once(self) -> list[str]:
         outputs: list[str] = []

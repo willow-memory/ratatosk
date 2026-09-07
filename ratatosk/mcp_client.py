@@ -1,4 +1,10 @@
-"""MCP stdio client — defaults to willow-mcp, not archived sap paths."""
+"""MCP stdio client — defaults to willow-mcp, not archived sap paths.
+
+Field names differ across mcp SDK majors: 1.x exposes ``Tool.inputSchema`` and
+``CallToolResult.isError``, 2.x renames the Python attributes to
+``input_schema`` and ``is_error`` (the wire aliases are unchanged). Read both,
+so one venv upgrade does not silently sever the fleet.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +14,8 @@ import shlex
 import sys
 import threading
 from pathlib import Path
+
+MCP_ERROR_PREFIX = "[mcp-error]"
 
 _mcp_session = None
 _mcp_loop: asyncio.AbstractEventLoop | None = None
@@ -22,6 +30,34 @@ def default_mcp_argv() -> list[str]:
     return [sys.executable, "-m", module]
 
 
+#: Environment namespaces forwarded to the server we spawn. The MCP SDK does
+#: NOT inherit the parent environment: with ``StdioServerParameters.env`` unset
+#: it hands the child ``get_default_environment()``, which is HOME, LOGNAME,
+#: PATH, SHELL, TERM, USER and nothing else. Every WILLOW_* variable was being
+#: stripped, so the willow-mcp we launched fell back to WILLOW_PG_DB="willow"
+#: instead of the fleet's willow_20 and reported postgres_unavailable for every
+#: call — while the same server, launched from .mcp.json with a full env,
+#: worked. WILLOW_HOME was stripped too, so it never read our signed manifest.
+_ENV_PREFIXES = ("WILLOW_", "RATATOSK_", "PG")
+
+
+def server_env() -> dict[str, str]:
+    """The environment to hand the spawned MCP server.
+
+    SDK defaults plus this process's fleet configuration. Set
+    ``RATATOSK_MCP_INHERIT_ENV=1`` to forward the whole environment instead.
+    """
+    from mcp.client.stdio import get_default_environment
+
+    if os.environ.get("RATATOSK_MCP_INHERIT_ENV", "").strip() in {"1", "true", "yes"}:
+        return dict(os.environ)
+    env = dict(get_default_environment())
+    env.update(
+        {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)}
+    )
+    return env
+
+
 def _mcp_call_sync(coro):
     assert _mcp_loop is not None
     return asyncio.run_coroutine_threadsafe(coro, _mcp_loop).result(timeout=60)
@@ -34,7 +70,7 @@ async def _lifecycle(argv: list[str], ready: threading.Event) -> None:
 
     stop = asyncio.Event()
     _mcp_stop_event = stop
-    params = StdioServerParameters(command=argv[0], args=argv[1:])
+    params = StdioServerParameters(command=argv[0], args=argv[1:], env=server_env())
 
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -68,24 +104,39 @@ def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
             {
                 "name": tool.name,
                 "description": tool.description or "",
-                "input_schema": tool.inputSchema,
+                "input_schema": _tool_schema(tool),
             }
         )
         names.add(tool.name)
     return anthropic_tools, names
 
 
+def _tool_schema(tool) -> dict:
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    return schema or {}
+
+
+def _is_error(result) -> bool:
+    flag = getattr(result, "is_error", None)
+    if flag is None:
+        flag = getattr(result, "isError", None)
+    return bool(flag)
+
+
 def call(name: str, inputs: dict) -> str:
     try:
         result = _mcp_call_sync(_mcp_session.call_tool(name, inputs))
-        if result.isError:
-            return f"[mcp-error] {result.content}"
+        if _is_error(result):
+            return f"{MCP_ERROR_PREFIX} {result.content}"
         parts = [chunk.text for chunk in result.content if hasattr(chunk, "text")]
         return "\n".join(parts) if parts else json.dumps(str(result.content))
     except Exception as exc:
-        return f"[mcp-error] {exc}"
+        return f"{MCP_ERROR_PREFIX} {exc}"
 
 
 def shutdown() -> None:
     if _mcp_stop_event is not None and _mcp_loop is not None:
-        asyncio.run_coroutine_threadsafe(_mcp_stop_event.set(), _mcp_loop)
+        # Event.set is a plain callable, not a coroutine function.
+        _mcp_loop.call_soon_threadsafe(_mcp_stop_event.set)
