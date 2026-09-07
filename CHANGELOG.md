@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.2](https://github.com/willow-memory/ratatosk/compare/v1.2.1...v1.2.2) (2026-09-07)
+
+
+### Fixed
+
+* **listener:** a seat never answers its own post ([dc5b6be](https://github.com/willow-memory/ratatosk/commit/dc5b6bead1d6cbf8534e5391c5cef2152a8800fb))
+* **listener:** a seat never answers its own post ([#5](https://github.com/willow-memory/ratatosk/issues/5)) ([8e2fbd6](https://github.com/willow-memory/ratatosk/commit/8e2fbd66ec7cac93549419f6e4b02e055dae281c))
+
 ## [1.2.1](https://github.com/willow-memory/ratatosk/compare/v1.2.0...v1.2.1) (2026-09-07)
 
 
