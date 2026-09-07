@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.8](https://github.com/willow-memory/ratatosk/compare/v1.2.7...v1.2.8) (2026-09-07)
+
+
+### Fixed
+
+* **test:** tomllib is 3.11+, and this package supports 3.10 ([5e7ad31](https://github.com/willow-memory/ratatosk/commit/5e7ad31c80ad8ac3b17b87735759c64dd4cc2f7b))
+
 ## [1.2.7](https://github.com/willow-memory/ratatosk/compare/v1.2.6...v1.2.7) (2026-09-07)
 
 
