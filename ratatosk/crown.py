@@ -17,9 +17,30 @@ from ratatosk.hooks import HookRuntime
 from ratatosk.policy import PolicyStore
 
 _HOME = Path.home()
-_WILLOW_ROOT = Path(os.environ.get("WILLOW_ROOT", str(_HOME / "github" / "willow-memory" / "willow")))
 _MAX_TURNS = 20
 _MAX_CHARS = 200_000
+
+
+def _resolve_willow_root() -> Path:
+    """Where fleet-wide context (CLAUDE.md) lives.
+
+    The old default was a hardcoded ``~/github/willow-memory/willow`` — a
+    machine-specific path that does not exist on the reference node, so the
+    fallback silently resolved to nothing. Prefer the explicit variable, then
+    derive from WILLOW_HOME (the fleet already routes data through it, see
+    paths.ratatosk_data_root), and only then guess.
+    """
+    explicit = os.environ.get("WILLOW_ROOT")
+    if explicit:
+        return Path(explicit)
+    for key in ("WILLOW_HOME", "WILLOW_STORE_ROOT"):
+        value = os.environ.get(key)
+        if value:
+            return Path(value).parent
+    return _HOME / "github" / "willow-memory"
+
+
+_WILLOW_ROOT = _resolve_willow_root()
 
 
 def _compact(history: list[dict]) -> tuple[list[dict], bool]:
@@ -41,7 +62,6 @@ def _compact(history: list[dict]) -> tuple[list[dict], bool]:
 def _load_system_prompt() -> str:
     paths = [
         _WILLOW_ROOT / "CLAUDE.md",
-        _HOME / "github" / "willow-memory" / "willow" / "CLAUDE.md",
         _HOME / "CLAUDE.md",
     ]
     parts = []
@@ -326,6 +346,60 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         state.history.append({"role": "user", "content": tool_results})
 
 
+def _shutdown(state: RuntimeState) -> None:
+    """Close the session down. Runs from a `finally`, so it must not raise.
+
+    Every step here was previously straight-line code after the REPL loop, which
+    meant anything escaping the loop — a KeyboardInterrupt, most of all — skipped
+    all of it: the JSONL survived (it is written per entry) but was never
+    indexed, so `/sessions` and `/resume` could not see it and the tier-0 deposit
+    never happened. Each step is guarded independently so one failure cannot
+    strand the rest.
+    """
+    writer = state.writer
+    turns = len(state.history) // 2
+
+    if state.args.mcp:
+        try:
+            from ratatosk import mcp_client
+
+            if not mcp_client.shutdown():
+                print("  [mcp] stdio teardown did not finish within timeout", flush=True)
+        except Exception as exc:
+            print(f"  [mcp] shutdown failed: {exc}", flush=True)
+
+    try:
+        end_receipt = _grove.session_ended(writer.session_id, turns, str(writer.path))
+        if not end_receipt.skipped and not end_receipt.ok:
+            print(f"  [grove] {end_receipt.detail}", flush=True)
+    except Exception as exc:
+        print(f"  [grove] session_ended failed: {exc}", flush=True)
+
+    try:
+        state.hooks.run_event("SessionEnd", {"session_id": writer.session_id, "turns": turns})
+    except Exception as exc:
+        print(f"  [hooks] SessionEnd failed: {exc}", flush=True)
+
+    if state.args.deposit:
+        try:
+            print(f"  [deposit] {_sync.write_deposit(writer)}")
+        except Exception as exc:
+            print(f"  [deposit] failed: {exc}", flush=True)
+
+    try:
+        index_session(
+            session_id=writer.session_id,
+            cwd=writer.cwd,
+            model=state.model,
+            jsonl_path=writer.path,
+            resumed_from=state.resumed_from,
+        )
+    except Exception as exc:
+        print(f"  [history] index failed: {exc}", flush=True)
+
+    print(f"Session written: {writer.path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ratatosk — Willow platform session runtime")
     parser.add_argument("--model", default="claude-sonnet-4-6")
@@ -357,7 +431,17 @@ def main() -> None:
             from ratatosk.listener import BusListener
 
             listener = BusListener(mcp_call=mcp_call)
-            listener.run_forever(on_status=lambda msg: print(f"  [listen] {msg}", flush=True))
+            # No session writer on this path — there is no REPL and no
+            # transcript — but the MCP server still needs a protocol teardown
+            # rather than being killed by process exit. Ctrl-C is the normal
+            # way this mode ends, so the finally is the only thing that runs.
+            try:
+                listener.run_forever(on_status=lambda msg: print(f"  [listen] {msg}", flush=True))
+            except KeyboardInterrupt:
+                print("\n  [listen] stopped", flush=True)
+            finally:
+                if not mcp_client.shutdown():
+                    print("  [mcp] stdio teardown did not finish within timeout", flush=True)
             return
 
     if not use_local:
@@ -398,43 +482,32 @@ def main() -> None:
     print(f"\nRatatosk  [{model}]  [{trust_label}]  session:{writer.session_id[:8]}…")
     print("Type /help for commands.\n")
 
-    while True:
-        try:
-            user_input = input("▶ ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not user_input:
-            continue
-        if user_input.startswith("/"):
-            if router.run(user_input):
+    try:
+        while True:
+            try:
+                user_input = input("▶ ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
                 break
-            continue
-        try:
-            _run_turn(state, user_input)
-        except Exception as exc:
-            print(f"\nERROR: {exc}")
-
-    if args.mcp:
-        from ratatosk import mcp_client
-
-        mcp_client.shutdown()
-
-    end_receipt = _grove.session_ended(writer.session_id, len(state.history) // 2, str(writer.path))
-    state.hooks.run_event("SessionEnd", {"session_id": writer.session_id, "turns": len(state.history) // 2})
-    if not end_receipt.skipped and not end_receipt.ok:
-        print(f"  [grove] {end_receipt.detail}", flush=True)
-    if args.deposit:
-        deposit = _sync.write_deposit(writer)
-        print(f"  [deposit] {deposit}")
-    index_session(
-        session_id=writer.session_id,
-        cwd=writer.cwd,
-        model=model,
-        jsonl_path=writer.path,
-        resumed_from=state.resumed_from,
-    )
-    print(f"Session written: {writer.path}")
+            if not user_input:
+                continue
+            if user_input.startswith("/"):
+                if router.run(user_input):
+                    break
+                continue
+            try:
+                _run_turn(state, user_input)
+            except KeyboardInterrupt:
+                # An interrupt ends the turn, not the session. KeyboardInterrupt
+                # is a BaseException, so the `except Exception` below never saw
+                # it and it escaped the loop entirely — taking every cleanup
+                # path with it. The moment you most want to interrupt was the
+                # one that cost you the session.
+                print("\n  [interrupted] turn abandoned — session still open")
+            except Exception as exc:
+                print(f"\nERROR: {exc}")
+    finally:
+        _shutdown(state)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ MCP_ERROR_PREFIX = "[mcp-error]"
 _mcp_session = None
 _mcp_loop: asyncio.AbstractEventLoop | None = None
 _mcp_stop_event: asyncio.Event | None = None
+_mcp_thread: threading.Thread | None = None
 
 
 def default_mcp_argv() -> list[str]:
@@ -81,18 +82,19 @@ async def _lifecycle(argv: list[str], ready: threading.Event) -> None:
 
 
 def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
-    global _mcp_loop
+    global _mcp_loop, _mcp_thread
 
     argv = argv or default_mcp_argv()
     loop = asyncio.new_event_loop()
     _mcp_loop = loop
     ready = threading.Event()
 
-    threading.Thread(
+    _mcp_thread = threading.Thread(
         target=lambda: loop.run_until_complete(_lifecycle(argv, ready)),
         daemon=True,
         name="ratatosk-mcp",
-    ).start()
+    )
+    _mcp_thread.start()
 
     if not ready.wait(timeout=60):
         raise RuntimeError("MCP server did not initialize within 60s")
@@ -136,7 +138,25 @@ def call(name: str, inputs: dict) -> str:
         return f"{MCP_ERROR_PREFIX} {exc}"
 
 
-def shutdown() -> None:
-    if _mcp_stop_event is not None and _mcp_loop is not None:
+def shutdown(timeout: float = 10.0) -> bool:
+    """Stop the MCP server and wait for stdio teardown to finish.
+
+    Returns True when the lifecycle thread actually exited. Setting the stop
+    event only *schedules* the shutdown; without the join the interpreter can
+    exit first — the thread is a daemon — leaving the spawned server's stdio
+    torn down by process death rather than by the protocol.
+    """
+    if _mcp_stop_event is None or _mcp_loop is None:
+        return True
+    if _mcp_loop.is_closed():
+        return True
+    try:
         # Event.set is a plain callable, not a coroutine function.
         _mcp_loop.call_soon_threadsafe(_mcp_stop_event.set)
+    except RuntimeError:
+        # Loop already stopped; nothing left to wake.
+        return True
+    if _mcp_thread is None:
+        return True
+    _mcp_thread.join(timeout=timeout)
+    return not _mcp_thread.is_alive()
