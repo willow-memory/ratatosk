@@ -30,8 +30,8 @@ def test_policy_can_deny_tool(tmp_path, monkeypatch):
     policy = PolicyStore()
     policy.set_rule("Read", "deny")
     result = dispatch("Read", {"file_path": __file__}, set(), None, trusted=True, policy_store=policy)
-    payload = json.loads(result)
-    assert "error" in payload
+    assert "refused" in str(result)
+    assert "/permissions" in str(result), "an error states the fault and the remedy"
 
 
 def test_hook_runtime_post_tool(tmp_path):

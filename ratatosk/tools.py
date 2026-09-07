@@ -17,13 +17,22 @@ from ratatosk.policy import PolicyStore
 BASH_TOOL = {
     "name": "Bash",
     "description": (
-        "Run a command without a shell (POSIX words via shlex). "
-        "High-risk — requires confirmation unless --trust."
+        "Run a single program directly. There is no shell: the command is split "
+        "into POSIX words and executed with shell=False, so pipes, redirects, "
+        "globs, &&/||/;, $VAR expansion, backticks and subshells do NOT work — "
+        "they are passed through as literal arguments. Run one program with its "
+        "arguments. High-risk: requires confirmation unless --trust."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Shell command to execute"},
+            "command": {
+                "type": "string",
+                "description": (
+                    "A single program and its arguments, e.g. 'ls -la /tmp'. "
+                    "Not a shell line."
+                ),
+            },
         },
         "required": ["command"],
     },
@@ -31,7 +40,10 @@ BASH_TOOL = {
 
 READ_TOOL = {
     "name": "Read",
-    "description": "Read a file from disk and return its contents (up to 4000 chars).",
+    "description": (
+        "Read a file and return its contents with line numbers. Long files are "
+        "truncated with an explicit marker naming how much was omitted."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -86,6 +98,70 @@ BASE_TOOLS = [BASH_TOOL, READ_TOOL, WRITE_TOOL, EDIT_TOOL, GLOB_TOOL]
 _MAX_READ = 4000
 _BASH_TIMEOUT = 60
 
+#: Programs that are a shell in disguise. The Bash tool promises "no shell";
+#: `sh -c` would quietly make that false, so it is refused rather than being
+#: left as a hole the description does not mention.
+_SHELL_IN_DISGUISE: dict[str, tuple[str, ...]] = {
+    "sh": ("-c",),
+    "bash": ("-c",),
+    "zsh": ("-c",),
+    "dash": ("-c",),
+    "ksh": ("-c",),
+    "python": ("-c",),
+    "python3": ("-c",),
+    "perl": ("-e",),
+    "ruby": ("-e",),
+    "node": ("-e", "--eval"),
+}
+
+
+def problem(fault: str, remedy: str = "") -> str:
+    """The one shape a failed tool call comes back in.
+
+    `dispatch` used to return three: a JSON `{"error": ...}` for a policy
+    denial, a bare `ERROR: {exc}` for a tool failure, and `[stub] tool 'x' not
+    wired` for an unknown tool. The model could not reliably tell "I called this
+    wrongly" from "the tool broke" from "that tool does not exist" — three
+    situations with three different next moves.
+
+    Prose, not a machine-readable `kind`. The reader is a language model, and a
+    rigid structure costs accuracy by making it parse a schema while it reasons.
+    The target already existed in this file: "old_string matches 3 times — must
+    be unique" says the fault and the remedy in one line.
+    """
+    return f"{fault}{chr(10) + remedy if remedy else ''}"
+
+
+def _clip(text: str, limit: int, unit: str = "characters") -> str:
+    """Truncate loudly. Silence is indistinguishable from a short file."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    omitted = len(text) - limit
+    return (
+        f"{head}\n\n[truncated: showing the first {limit:,} of {len(text):,} {unit}; "
+        f"{omitted:,} omitted. Read a specific range to see more.]"
+    )
+
+
+def _numbered(text: str) -> str:
+    lines = text.splitlines()
+    width = len(str(len(lines))) if lines else 1
+    return "\n".join(f"{i:>{width}}\t{line}" for i, line in enumerate(lines, 1))
+
+
+def _reject_shell_in_disguise(argv: list[str]) -> str | None:
+    program = Path(argv[0]).name
+    flags = _SHELL_IN_DISGUISE.get(program)
+    if not flags:
+        return None
+    if any(arg in flags for arg in argv[1:]):
+        return problem(
+            f"Refused: `{program} {flags[0]}` runs a shell, and this tool does not provide one.",
+            "Run the program directly with its arguments, or write a script file and run that.",
+        )
+    return None
+
 
 def _gate_for(gate: CapabilityGate | None) -> CapabilityGate:
     """A per-call gate unless the caller supplies one.
@@ -113,25 +189,33 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
         try:
             argv = shlex.split(cmd, posix=True)
         except ValueError as exc:
-            return f"ERROR: could not parse command: {exc}"
-        if not argv:
-            return "(no command)"
-        try:
-            result = subprocess.run(
-                argv,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=_BASH_TIMEOUT,
-                env=child_env(),
+            return problem(
+                f"Could not parse the command: {exc}.",
+                "Check for an unbalanced quote. This tool splits into POSIX words, not a shell line.",
             )
-        except subprocess.TimeoutExpired:
-            return f"ERROR: command timed out ({_BASH_TIMEOUT}s)"
-        return redact((result.stdout + result.stderr).strip()) or "(no output)"
+        if not argv:
+            return problem("The command was empty.", "Pass a program name and its arguments.")
+        refusal = _reject_shell_in_disguise(argv)
+        if refusal:
+            return refusal
+        return _run_bash(argv)
 
     if name == "Read":
         path = inputs.get("file_path", "") or inputs.get("path", "")
-        return redact(Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ])
+        if not path:
+            return problem("No file_path was given.", "Pass an absolute path in file_path.")
+        target = Path(path)
+        if not target.exists():
+            return problem(
+                f"{path} does not exist.",
+                "Check the path, or use Glob to find it.",
+            )
+        if target.is_dir():
+            return problem(
+                f"{path} is a directory, not a file.",
+                "Use Glob to list its contents.",
+            )
+        return _clip(redact(_numbered(target.read_text(encoding="utf-8", errors="replace"))), _MAX_READ)
 
     if name == "Write":
         path = inputs.get("file_path", "")
@@ -148,9 +232,15 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
         text = Path(path).read_text(encoding="utf-8")
         count = text.count(old)
         if count == 0:
-            return f"ERROR: old_string not found in {path}"
+            return problem(
+                f"old_string was not found in {path}.",
+                "Read the file first and copy the text exactly, including whitespace.",
+            )
         if count > 1:
-            return f"ERROR: old_string matches {count} times — must be unique"
+            return problem(
+                f"old_string matches {count} times in {path} — must be unique.",
+                "Include more surrounding lines so the match is unambiguous.",
+            )
         Path(path).write_text(text.replace(old, new, 1), encoding="utf-8")
         return f"Edited {path}"
 
@@ -165,7 +255,57 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
     if name in mcp_names and mcp_call is not None:
         return mcp_call(name, inputs)
 
-    return f"[stub] tool '{name}' not wired. inputs={json.dumps(inputs)[:120]}"
+    return problem(
+        f"There is no tool called '{name}'.",
+        "Use one of the tools listed for this session; check the spelling.",
+    )
+
+
+def _run_bash(argv: list[str]) -> str:
+    """Run one program, and kill its whole process group on timeout.
+
+    `subprocess.run(timeout=)` signals only the direct child, so a program that
+    spawned its own children left them running after the timeout fired.
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=child_env(),
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=_BASH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        out, err = proc.communicate()
+        return problem(
+            f"The command timed out after {_BASH_TIMEOUT}s and was killed.",
+            "Run something shorter, or redirect long output to a file and read that.",
+        )
+    combined = redact((out + err).strip())
+    if not combined:
+        return "(no output)"
+    return _clip(combined, _MAX_READ)
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    import os
+    import signal
+
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.terminate()
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            proc.kill()
 
 
 def dispatch(
@@ -211,7 +351,10 @@ def dispatch(
                 "PermissionDenied",
                 {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
             )
-            return json.dumps({"error": f"blocked by hook {block.script}: {block.reason}"})
+            return problem(
+            f"{name} was blocked by the hook {block.script}: {block.reason}",
+            "Adjust the call, or change that hook in hooks.json.",
+        )
         # A hook may adjust an argument it can already see. Re-validated below,
         # so a mutation cannot buy permission it did not have.
         inputs = merged_input(pre, inputs)
@@ -225,14 +368,17 @@ def dispatch(
                 "PermissionDenied",
                 {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
             )
-        return json.dumps({"error": decision.reason})
+        return problem(
+            f"{name} was refused: {decision.reason}.",
+            "Ask the operator to allow it with /permissions, or use a different tool.",
+        )
     if decision.verdict is Verdict.CONFIRM:
         raise NeedsConfirmation(name, inputs, decision)
 
     try:
         output = _run_tool(name, inputs, mcp_names, mcp_call)
     except Exception as exc:
-        output = f"ERROR: {exc}"
+        output = problem(f"{name} failed: {exc}.", "Check the arguments and try again.")
         return output
     finally:
         # Unconditional: the stream must not have holes where a tool failed.
@@ -276,7 +422,10 @@ def prompt_and_dispatch(
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer != "y":
-            return json.dumps({"error": "user denied"})
+            return problem(
+                f"The operator declined to run {name}.",
+                "Do not retry the same call; ask what they would prefer.",
+            )
         # One-shot approval for this call only: re-enter with the verdict
         # already resolved, never by widening the policy.
         return dispatch(

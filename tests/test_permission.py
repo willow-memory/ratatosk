@@ -82,7 +82,7 @@ def test_deny_still_returns_an_error_value(tmp_path, monkeypatch):
     policy = _policy(tmp_path, monkeypatch)
     policy.set_rule("Read", "deny")
     result = dispatch("Read", {"file_path": __file__}, set(), None, trusted=True, policy_store=policy)
-    assert "error" in json.loads(result)
+    assert "refused" in str(result)
 
 
 def test_deny_beats_allow_from_the_other_source(tmp_path, monkeypatch):
@@ -151,7 +151,7 @@ def test_prompt_and_dispatch_refusal_does_not_run_the_tool(tmp_path, monkeypatch
         policy_store=policy,
     )
     assert not target.exists()
-    assert json.loads(result)["error"] == "user denied"
+    assert "declined" in str(result)
 
 
 def test_decision_is_frozen_and_reports_allowed():
