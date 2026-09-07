@@ -11,7 +11,7 @@ from ratatosk.capabilities import CapabilityGate
 from ratatosk.child_env import child_env
 from ratatosk.permission import NeedsConfirmation, Verdict, check
 from ratatosk.redact import redact
-from ratatosk.hooks import HookRuntime
+from ratatosk.hooks import HookRuntime, blocking as hooks_blocking, merged_input
 from ratatosk.policy import PolicyStore
 
 BASH_TOOL = {
@@ -100,38 +100,14 @@ def _gate_for(gate: CapabilityGate | None) -> CapabilityGate:
     return gate if gate is not None else CapabilityGate()
 
 
-def dispatch(
-    name: str,
-    inputs: dict,
-    mcp_names: set,
-    mcp_call,
-    *,
-    trusted: bool = False,
-    policy_store: PolicyStore | None = None,
-    hook_runtime: HookRuntime | None = None,
-    gate: CapabilityGate | None = None,
-) -> object:
-    tool_use_id = str(uuid.uuid4())
-    if hook_runtime is not None:
-        hook_runtime.run_event(
-            "PreTool",
-            {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
-        )
+def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
+    """Run one tool body. Raises on failure; the caller owns the error shape.
 
-    # The single chokepoint. Every verdict is resolved here, before any tool
-    # body runs, so a branch below cannot be reached around.
-    decision = check(name, inputs, trusted=trusted, policy=policy_store, gate=_gate_for(gate))
-    if decision.verdict is Verdict.DENY:
-        if hook_runtime is not None:
-            hook_runtime.run_event(
-                "PermissionDenied",
-                {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
-            )
-        return json.dumps({"error": decision.reason})
-    if decision.verdict is Verdict.CONFIRM:
-        raise NeedsConfirmation(name, inputs, decision)
-    trusted = True
-
+    Extracted so PostTool has exactly one emission point. It used to be emitted
+    inside each of seven success branches, which is why every `except` returned
+    without firing it — the stream had holes precisely where a hook would want
+    them.
+    """
     if name == "Bash":
         cmd = inputs.get("command", "")
         try:
@@ -149,97 +125,119 @@ def dispatch(
                 timeout=_BASH_TIMEOUT,
                 env=child_env(),
             )
-            output = redact((result.stdout + result.stderr).strip()) or "(no output)"
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PostTool",
-                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
-                )
-            return output
         except subprocess.TimeoutExpired:
             return f"ERROR: command timed out ({_BASH_TIMEOUT}s)"
-        except Exception as exc:
-            return f"ERROR: {exc}"
+        return redact((result.stdout + result.stderr).strip()) or "(no output)"
 
     if name == "Read":
         path = inputs.get("file_path", "") or inputs.get("path", "")
-        try:
-            output = redact(Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ])
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PostTool",
-                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
-                )
-            return output
-        except Exception as exc:
-            return f"ERROR: {exc}"
+        return redact(Path(path).read_text(encoding="utf-8", errors="replace")[:_MAX_READ])
 
     if name == "Write":
         path = inputs.get("file_path", "")
         content = inputs.get("content", "")
-        try:
-            target = Path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            output = f"Written {len(content)} chars to {path}"
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PostTool",
-                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
-                )
-            return output
-        except Exception as exc:
-            return f"ERROR: {exc}"
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"Written {len(content)} chars to {path}"
 
     if name == "Edit":
         path = inputs.get("file_path", "")
         old = inputs.get("old_string", "")
         new = inputs.get("new_string", "")
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-            count = text.count(old)
-            if count == 0:
-                return f"ERROR: old_string not found in {path}"
-            if count > 1:
-                return f"ERROR: old_string matches {count} times — must be unique"
-            Path(path).write_text(text.replace(old, new, 1), encoding="utf-8")
-            output = f"Edited {path}"
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PostTool",
-                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
-                )
-            return output
-        except Exception as exc:
-            return f"ERROR: {exc}"
+        text = Path(path).read_text(encoding="utf-8")
+        count = text.count(old)
+        if count == 0:
+            return f"ERROR: old_string not found in {path}"
+        if count > 1:
+            return f"ERROR: old_string matches {count} times — must be unique"
+        Path(path).write_text(text.replace(old, new, 1), encoding="utf-8")
+        return f"Edited {path}"
 
     if name == "Glob":
         import glob as _glob
 
         pattern = inputs.get("pattern", "")
         cwd = inputs.get("cwd", "") or str(Path.cwd())
-        try:
-            matches = sorted(_glob.glob(pattern, root_dir=cwd, recursive=True))
-            output = "\n".join(matches) if matches else "(no matches)"
-            if hook_runtime is not None:
-                hook_runtime.run_event(
-                    "PostTool",
-                    {"tool_name": name, "tool_input": inputs, "tool_output": output, "tool_use_id": tool_use_id},
-                )
-            return output
-        except Exception as exc:
-            return f"ERROR: {exc}"
+        matches = sorted(_glob.glob(pattern, root_dir=cwd, recursive=True))
+        return "\n".join(matches) if matches else "(no matches)"
 
     if name in mcp_names and mcp_call is not None:
-        output = mcp_call(name, inputs)
-        if hook_runtime is not None:
-            hook_runtime.run_event(
-                "PostTool",
-                {"tool_name": name, "tool_input": inputs, "tool_output": str(output), "tool_use_id": tool_use_id},
-            )
-        return output
+        return mcp_call(name, inputs)
 
     return f"[stub] tool '{name}' not wired. inputs={json.dumps(inputs)[:120]}"
+
+
+def dispatch(
+    name: str,
+    inputs: dict,
+    mcp_names: set,
+    mcp_call,
+    *,
+    trusted: bool = False,
+    policy_store: PolicyStore | None = None,
+    hook_runtime: HookRuntime | None = None,
+    gate: CapabilityGate | None = None,
+) -> object:
+    tool_use_id = str(uuid.uuid4())
+    output: object = None
+    fired = False
+
+    def fire_post(value: object) -> None:
+        nonlocal fired
+        if hook_runtime is not None and not fired:
+            fired = True
+            hook_runtime.run_event(
+                "PostTool",
+                {
+                    "tool_name": name,
+                    "tool_input": inputs,
+                    "tool_output": str(value),
+                    "tool_use_id": tool_use_id,
+                },
+            )
+
+    if hook_runtime is not None:
+        pre = hook_runtime.run_event(
+            "PreTool",
+            {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+        )
+        # A PreTool hook can now stop the call. Composed with the permission
+        # check below as: deny wins from either side. A hook may be the more
+        # restrictive voice, never the less.
+        block = hooks_blocking(pre)
+        if block is not None:
+            hook_runtime.run_event(
+                "PermissionDenied",
+                {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+            )
+            return json.dumps({"error": f"blocked by hook {block.script}: {block.reason}"})
+        # A hook may adjust an argument it can already see. Re-validated below,
+        # so a mutation cannot buy permission it did not have.
+        inputs = merged_input(pre, inputs)
+
+    # The single chokepoint. Every verdict is resolved here, before any tool
+    # body runs, so a branch below cannot be reached around.
+    decision = check(name, inputs, trusted=trusted, policy=policy_store, gate=_gate_for(gate))
+    if decision.verdict is Verdict.DENY:
+        if hook_runtime is not None:
+            hook_runtime.run_event(
+                "PermissionDenied",
+                {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
+            )
+        return json.dumps({"error": decision.reason})
+    if decision.verdict is Verdict.CONFIRM:
+        raise NeedsConfirmation(name, inputs, decision)
+
+    try:
+        output = _run_tool(name, inputs, mcp_names, mcp_call)
+    except Exception as exc:
+        output = f"ERROR: {exc}"
+        return output
+    finally:
+        # Unconditional: the stream must not have holes where a tool failed.
+        fire_post(output)
+    return output
 
 
 def prompt_and_dispatch(
