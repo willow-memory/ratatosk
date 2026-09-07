@@ -30,6 +30,34 @@ def default_mcp_argv() -> list[str]:
     return [sys.executable, "-m", module]
 
 
+#: Environment namespaces forwarded to the server we spawn. The MCP SDK does
+#: NOT inherit the parent environment: with ``StdioServerParameters.env`` unset
+#: it hands the child ``get_default_environment()``, which is HOME, LOGNAME,
+#: PATH, SHELL, TERM, USER and nothing else. Every WILLOW_* variable was being
+#: stripped, so the willow-mcp we launched fell back to WILLOW_PG_DB="willow"
+#: instead of the fleet's willow_20 and reported postgres_unavailable for every
+#: call — while the same server, launched from .mcp.json with a full env,
+#: worked. WILLOW_HOME was stripped too, so it never read our signed manifest.
+_ENV_PREFIXES = ("WILLOW_", "RATATOSK_", "PG")
+
+
+def server_env() -> dict[str, str]:
+    """The environment to hand the spawned MCP server.
+
+    SDK defaults plus this process's fleet configuration. Set
+    ``RATATOSK_MCP_INHERIT_ENV=1`` to forward the whole environment instead.
+    """
+    from mcp.client.stdio import get_default_environment
+
+    if os.environ.get("RATATOSK_MCP_INHERIT_ENV", "").strip() in {"1", "true", "yes"}:
+        return dict(os.environ)
+    env = dict(get_default_environment())
+    env.update(
+        {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)}
+    )
+    return env
+
+
 def _mcp_call_sync(coro):
     assert _mcp_loop is not None
     return asyncio.run_coroutine_threadsafe(coro, _mcp_loop).result(timeout=60)
@@ -42,7 +70,7 @@ async def _lifecycle(argv: list[str], ready: threading.Event) -> None:
 
     stop = asyncio.Event()
     _mcp_stop_event = stop
-    params = StdioServerParameters(command=argv[0], args=argv[1:])
+    params = StdioServerParameters(command=argv[0], args=argv[1:], env=server_env())
 
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
