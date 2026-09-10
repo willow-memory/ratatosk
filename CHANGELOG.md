@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.0](https://github.com/willow-memory/ratatosk/compare/v1.2.11...v1.3.0) (2026-09-10)
+
+
+### Added
+
+* **crown:** explain a verdict without running the tool ([3dfc0a9](https://github.com/willow-memory/ratatosk/commit/3dfc0a92621b8fda88dd7f990dcdb2506aad000f))
+* **permissions:** mark unreachable rules, and explain a verdict without running it ([#26](https://github.com/willow-memory/ratatosk/issues/26)) ([819ef49](https://github.com/willow-memory/ratatosk/commit/819ef49e6225c4b1c7d3830e3f0cdb1f9199dab1))
+* **policy:** report rules that can never fire ([aae1a13](https://github.com/willow-memory/ratatosk/commit/aae1a1350f806eb245d04a2e93457f34828917ca))
+
 ## [1.2.11](https://github.com/willow-memory/ratatosk/compare/v1.2.10...v1.2.11) (2026-09-10)
 
 
