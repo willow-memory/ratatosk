@@ -33,6 +33,7 @@ def _state(tmp_path, monkeypatch, **overrides) -> RuntimeState:
 def test_shutdown_indexes_the_session(tmp_path, monkeypatch, capsys):
     """The defect: an interrupt skipped this, so /sessions could not see the run."""
     state = _state(tmp_path, monkeypatch)
+    state.writer.write_user("hello")  # a session with something in it to index
     indexed = {}
     monkeypatch.setattr(
         "ratatosk.crown.index_session",
@@ -55,6 +56,7 @@ def test_shutdown_fires_the_session_end_hook(tmp_path, monkeypatch):
 def test_shutdown_survives_a_failing_step(tmp_path, monkeypatch, capsys):
     """One broken step must not strand the rest — it runs from a finally."""
     state = _state(tmp_path, monkeypatch)
+    state.writer.write_user("hello")  # a session with something in it to index
     indexed = []
 
     def boom(*a, **kw):
@@ -119,7 +121,12 @@ def test_ctrl_c_mid_turn_still_closes_the_session(tmp_path, monkeypatch, capsys)
             raise EOFError
         return nxt
 
-    def interrupted(_state, _user_input):
+    def interrupted(state, user_input):
+        # The real `_run_turn` writes the user entry as its first line, so an
+        # interrupted turn always leaves a JSONL behind. Raising before that
+        # would model a session that never wrote anything — which close-out now
+        # reports as such, and correctly does not index.
+        state.writer.write_user(user_input)
         raise KeyboardInterrupt
 
     indexed = []
