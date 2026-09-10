@@ -1,7 +1,7 @@
 import argparse
 
 from ratatosk import session as _session
-from ratatosk.crown import CommandRouter, RuntimeState
+from ratatosk.crown import CommandRouter, RuntimeState, _shutdown
 from ratatosk.history import index_session
 from ratatosk.hooks import HookRuntime
 from ratatosk.permission import check
@@ -159,3 +159,41 @@ def test_resume_command_loads_history(tmp_path, monkeypatch):
     assert router.run(f"/resume {prefix}") is False
     assert fresh_state.history
     assert "resumed context" in str(fresh_state.history[0]["content"])
+
+
+def test_an_empty_session_says_nothing_was_written(tmp_path, monkeypatch, capsys):
+    """`write` creates the JSONL on first entry, so a session that ends before
+    writing anything leaves no file. Close-out used to report a failed index
+    and then claim "Session written:" for a path that does not exist."""
+    state = _state(tmp_path, monkeypatch)
+    assert not state.writer.path.exists(), "nothing has been written yet"
+
+    _shutdown(state)
+
+    out = capsys.readouterr().out
+    assert "nothing written, nothing indexed" in out
+    assert "Session written:" not in out
+    assert "index failed" not in out
+    assert not state.writer.path.exists(), "must not touch a file to make the sentence true"
+
+
+def test_a_session_with_entries_still_reports_the_path(tmp_path, monkeypatch, capsys):
+    state = _state(tmp_path, monkeypatch)
+    state.writer.write_user("hello")
+
+    _shutdown(state)
+
+    out = capsys.readouterr().out
+    assert f"Session written: {state.writer.path}" in out
+    assert "nothing written" not in out
+
+
+def test_an_empty_session_with_deposit_says_there_is_no_deposit(tmp_path, monkeypatch, capsys):
+    state = _state(tmp_path, monkeypatch)
+    state.args.deposit = True
+
+    _shutdown(state)
+
+    out = capsys.readouterr().out
+    assert "no deposit" in out
+    assert "[deposit]" not in out, "it must not claim to have written one"

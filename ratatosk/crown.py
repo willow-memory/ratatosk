@@ -539,6 +539,20 @@ def _shutdown(state: RuntimeState) -> None:
     except Exception as exc:
         print(f"  [hooks] SessionEnd failed: {exc}", flush=True)
 
+    # `write` creates the JSONL on its first entry, so a session that ended
+    # before writing anything leaves no file. Indexing it raised
+    # FileNotFoundError — reported as "[history] index failed", as though
+    # something had gone wrong — and then the closing line said
+    # "Session written: <path>" for a path that does not exist. Two untruths
+    # for one ordinary case: a session in which nothing happened.
+    #
+    # The answer is not to touch an empty file so the sentence comes true.
+    # That would litter the session directory with rows about nothing.
+    if not writer.path.exists():
+        no_deposit = ", no deposit" if state.args.deposit else ""
+        print(f"Session had no entries — nothing written, nothing indexed{no_deposit}.")
+        return
+
     if state.args.deposit:
         try:
             print(f"  [deposit] {_sync.write_deposit(writer)}")
