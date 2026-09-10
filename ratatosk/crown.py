@@ -14,7 +14,9 @@ from ratatosk import sync as _sync
 from ratatosk import tools as _tools
 from ratatosk.history import ensure_history_db, index_session, list_sessions, load_session_history, search_sessions
 from ratatosk.hooks import HookRuntime
-from ratatosk.policy import PolicyStore
+from ratatosk.capabilities import CapabilityGate
+from ratatosk.permission import check as _permission_check
+from ratatosk.policy import PolicyStore, shadowed_rules
 from ratatosk.redact import redact
 
 _HOME = Path.home()
@@ -345,8 +347,38 @@ class CommandRouter:
             if not rules:
                 print("  no rules")
                 return False
-            for rule in rules:
-                print(f"  {rule.pattern:20} -> {rule.action}")
+            # A shadowed rule used to print exactly like a live one, so the
+            # operator read a rule that could never fire and believed it.
+            eaten = {s.index: s for s in shadowed_rules(rules)}
+            for i, rule in enumerate(rules):
+                line = f"  {rule.pattern:20} -> {rule.action}"
+                hit = eaten.get(i)
+                if hit is not None:
+                    line += f"   [unreachable: '{hit.by.pattern}' above answers first]"
+                print(line)
+            if eaten:
+                print(f"  {len(eaten)} rule(s) never fire — remove them or reorder above the rule that eats them")
+            return False
+        if parts[0] == "explain" and len(parts) >= 2:
+            tool_name = parts[1]
+            rest = arg.split(maxsplit=2)[2] if len(parts) > 2 else ""
+            # Bash is the one tool the capability gate speaks about, and it
+            # classifies the command text — so an explain with no command
+            # answers a different question than the real call would.
+            inputs = {"command": rest} if tool_name == "Bash" and rest else {}
+            decision = _permission_check(
+                tool_name,
+                inputs,
+                trusted=bool(getattr(self.state.args, "trust", False)),
+                policy=self.state.policy,
+                gate=CapabilityGate(),
+            )
+            print(f"  {tool_name} -> {decision.verdict.value}")
+            print(f"  reason: {decision.reason or '(none given)'}")
+            print(f"  source: {decision.source}")
+            if tool_name == "Bash" and not rest:
+                print("  note: no command given, so the capability gate saw an empty one")
+            print("  (dry run — nothing was executed)")
             return False
         if parts[0] == "set" and len(parts) == 3:
             self.state.policy.set_rule(parts[1], parts[2])
@@ -356,7 +388,10 @@ class CommandRouter:
             removed = self.state.policy.remove_rule(parts[1])
             print("  removed" if removed else "  rule not found")
             return False
-        print("  usage: /permissions [list|set <pattern> <allow|deny|confirm>|remove <pattern>]")
+        print(
+            "  usage: /permissions [list|explain <tool> [args]|"
+            "set <pattern> <allow|deny|confirm>|remove <pattern>]"
+        )
         return False
 
     def _cmd_hooks(self, arg: str) -> bool:
