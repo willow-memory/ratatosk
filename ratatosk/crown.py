@@ -544,18 +544,31 @@ def main() -> None:
         if args.listen:
             from ratatosk.listener import BusListener
 
-            listener = BusListener(mcp_call=mcp_call)
             # No session writer on this path — there is no REPL and no
             # transcript — but the MCP server still needs a protocol teardown
             # rather than being killed by process exit. Ctrl-C is the normal
             # way this mode ends, so the finally is the only thing that runs.
+            #
+            # Construction is inside the try for the same reason: BusListener
+            # refuses an unset channel, and that refusal arrives *after*
+            # mcp_client.start() has spawned the server. Built above the try it
+            # tracebacked out and left the child running.
+            refused = ""
             try:
+                listener = BusListener(mcp_call=mcp_call)
                 listener.run_forever(on_status=lambda msg: print(f"  [listen] {msg}", flush=True))
             except KeyboardInterrupt:
                 print("\n  [listen] stopped", flush=True)
+            except ValueError as exc:
+                refused = str(exc)
             finally:
                 if not mcp_client.shutdown():
                     print("  [mcp] stdio teardown did not finish within timeout", flush=True)
+            if refused:
+                # Same refusal the termux boot script prints, and the same exit
+                # code: an unconfigured listener is a failure, not a quiet no-op.
+                print(f"  [listen] {refused}", flush=True)
+                raise SystemExit(1)
             return
 
     if not use_local:
