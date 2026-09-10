@@ -524,6 +524,13 @@ def main() -> None:
     parser.add_argument("--deposit", action="store_true", help="Write tier-0 session deposit on exit")
     args = parser.parse_args()
 
+    # The help text has always said --listen requires --mcp, but nothing
+    # enforced it: the listener lives inside `if args.mcp`, so `--listen`
+    # alone fell through to an ordinary REPL. Asking for a bus listener and
+    # silently getting a chat prompt is the flag lying about what it did.
+    if args.listen and not args.mcp:
+        parser.error("--listen requires --mcp: the bus listener speaks to willow-mcp over stdio")
+
     ensure_history_db()
     policy = PolicyStore()
     hooks = HookRuntime()
@@ -544,18 +551,31 @@ def main() -> None:
         if args.listen:
             from ratatosk.listener import BusListener
 
-            listener = BusListener(mcp_call=mcp_call)
             # No session writer on this path — there is no REPL and no
             # transcript — but the MCP server still needs a protocol teardown
             # rather than being killed by process exit. Ctrl-C is the normal
             # way this mode ends, so the finally is the only thing that runs.
+            #
+            # Construction is inside the try for the same reason: BusListener
+            # refuses an unset channel, and that refusal arrives *after*
+            # mcp_client.start() has spawned the server. Built above the try it
+            # tracebacked out and left the child running.
+            refused = ""
             try:
+                listener = BusListener(mcp_call=mcp_call)
                 listener.run_forever(on_status=lambda msg: print(f"  [listen] {msg}", flush=True))
             except KeyboardInterrupt:
                 print("\n  [listen] stopped", flush=True)
+            except ValueError as exc:
+                refused = str(exc)
             finally:
                 if not mcp_client.shutdown():
                     print("  [mcp] stdio teardown did not finish within timeout", flush=True)
+            if refused:
+                # Same refusal the termux boot script prints, and the same exit
+                # code: an unconfigured listener is a failure, not a quiet no-op.
+                print(f"  [listen] {refused}", flush=True)
+                raise SystemExit(1)
             return
 
     if not use_local:
