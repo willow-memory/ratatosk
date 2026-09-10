@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.1](https://github.com/willow-memory/ratatosk/compare/v1.4.0...v1.4.1) (2026-09-10)
+
+
+### Fixed
+
+* **grove:** give the sender one supported way to be bound ([279c791](https://github.com/willow-memory/ratatosk/commit/279c791e778e9e8561d1ba44966786ec4d80e9c4))
+* **grove:** give the sender one supported way to be bound ([#30](https://github.com/willow-memory/ratatosk/issues/30)) ([fa4ec2d](https://github.com/willow-memory/ratatosk/commit/fa4ec2db778683b9efdee74035559548f6caeac7))
+
 ## [1.4.0](https://github.com/willow-memory/ratatosk/compare/v1.3.0...v1.4.0) (2026-09-10)
 
 
