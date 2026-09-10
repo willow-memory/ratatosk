@@ -39,6 +39,17 @@ def test_unset_channel_refuses_without_orphaning_the_server(fake_mcp, monkeypatc
     assert "RATATOSK_GROVE_CHANNEL" in out, "an error states the fault and the remedy"
 
 
+def test_listen_without_mcp_is_refused_rather_than_becoming_a_repl(monkeypatch, capsys):
+    """The flag used to fall through to an ordinary REPL and say nothing."""
+    monkeypatch.setattr("sys.argv", ["ratatosk", "--listen"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        crown.main()
+
+    assert exit_info.value.code == 2, "argparse's usage-error code"
+    assert "--listen requires --mcp" in capsys.readouterr().err
+
+
 def test_ctrl_c_still_tears_the_server_down(fake_mcp, monkeypatch, capsys):
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
 

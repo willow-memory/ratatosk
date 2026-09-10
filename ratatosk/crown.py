@@ -524,6 +524,13 @@ def main() -> None:
     parser.add_argument("--deposit", action="store_true", help="Write tier-0 session deposit on exit")
     args = parser.parse_args()
 
+    # The help text has always said --listen requires --mcp, but nothing
+    # enforced it: the listener lives inside `if args.mcp`, so `--listen`
+    # alone fell through to an ordinary REPL. Asking for a bus listener and
+    # silently getting a chat prompt is the flag lying about what it did.
+    if args.listen and not args.mcp:
+        parser.error("--listen requires --mcp: the bus listener speaks to willow-mcp over stdio")
+
     ensure_history_db()
     policy = PolicyStore()
     hooks = HookRuntime()
