@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/willow-memory/ratatosk/compare/v1.5.0...v1.6.0) (2026-09-10)
+
+
+### Added
+
+* **mcp:** reconnect when the server dies ([#37](https://github.com/willow-memory/ratatosk/issues/37)) ([6c9e6f4](https://github.com/willow-memory/ratatosk/commit/6c9e6f4d8a03dad1a0356cbe3c21e98bc85f9680))
+
 ## [1.5.0](https://github.com/willow-memory/ratatosk/compare/v1.4.4...v1.5.0) (2026-09-10)
 
 
