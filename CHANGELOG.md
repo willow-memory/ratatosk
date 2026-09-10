@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.2](https://github.com/willow-memory/ratatosk/compare/v1.4.1...v1.4.2) (2026-09-10)
+
+
+### Fixed
+
+* **crown:** do not claim to have written an empty session ([bcbd44f](https://github.com/willow-memory/ratatosk/commit/bcbd44fcf4aa3f71e24eb610005cdb7206c3ec0d))
+* **crown:** do not claim to have written an empty session ([#32](https://github.com/willow-memory/ratatosk/issues/32)) ([006e562](https://github.com/willow-memory/ratatosk/commit/006e5625cb5196a6ea2d7334337b03a3786156aa))
+
 ## [1.4.1](https://github.com/willow-memory/ratatosk/compare/v1.4.0...v1.4.1) (2026-09-10)
 
 
