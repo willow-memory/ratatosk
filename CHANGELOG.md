@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0](https://github.com/willow-memory/ratatosk/compare/v1.3.0...v1.4.0) (2026-09-10)
+
+
+### Added
+
+* **permission:** cite CONST-X-4, the clause this seam already enforces ([dc5cfe0](https://github.com/willow-memory/ratatosk/commit/dc5cfe0b22566d2fc292f98343e888f6d3537fa3))
+* **permissions:** argument-scoped rules, and cite the clause the seam enforces ([#28](https://github.com/willow-memory/ratatosk/issues/28)) ([db3dbbd](https://github.com/willow-memory/ratatosk/commit/db3dbbd97287dfce79bf3c431d0d2643df135546))
+* **policy:** scope a rule to the argument, not just the tool ([7461e31](https://github.com/willow-memory/ratatosk/commit/7461e31142437129f8819c98d9534627c048f068))
+
+## [1.3.0](https://github.com/willow-memory/ratatosk/compare/v1.2.11...v1.3.0) (2026-09-10)
+
+
+### Added
+
+* **crown:** explain a verdict without running the tool ([3dfc0a9](https://github.com/willow-memory/ratatosk/commit/3dfc0a92621b8fda88dd7f990dcdb2506aad000f))
+* **permissions:** mark unreachable rules, and explain a verdict without running it ([#26](https://github.com/willow-memory/ratatosk/issues/26)) ([819ef49](https://github.com/willow-memory/ratatosk/commit/819ef49e6225c4b1c7d3830e3f0cdb1f9199dab1))
+* **policy:** report rules that can never fire ([aae1a13](https://github.com/willow-memory/ratatosk/commit/aae1a1350f806eb245d04a2e93457f34828917ca))
+
 ## [1.2.11](https://github.com/willow-memory/ratatosk/compare/v1.2.10...v1.2.11) (2026-09-10)
 
 

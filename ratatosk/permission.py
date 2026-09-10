@@ -27,6 +27,23 @@ the model should see and reason about, so it stays a value. A confirmation is
 an *unfinished* decision — it needs a human — and a caller that does not handle
 it must fail closed rather than proceed. Raising is what makes forgetting to
 handle it safe. `prompt_and_dispatch` is the one caller that resolves it.
+
+Both rules are the single-machine form of **CONST-X-4**, the Concurrence Rule
+(willows-grove `governance/CONSTITUTION.md`, Draft 0.7 — unratified): permissions
+compose conjunctively, any denial denies, and an authority that fails to answer
+has denied. This module is a deterministic enforcement artifact for that clause
+and cites it by Trace ID throughout, because Appendix A requires the machinery to
+name the law and never the reverse — references point up, and coverage is
+discovered by scanning for those citations rather than read off a list the
+constitution carries.
+
+The article ID `CONST-X` is cited alongside deliberately. `const_coverage.py`
+reports only clauses the constitution *defines* by writing their Trace ID, and
+today that document tags Article X at article level only — it writes the clause
+as "X.4 — The Concurrence Rule" and never as `CONST-X-4`. A citation to the
+precise ID is therefore invisible to the report until the charter gives that
+clause an ID of its own. Both are here so the artifact is discoverable now and
+correct later.
 """
 from __future__ import annotations
 
@@ -73,17 +90,26 @@ _ORDER = {Verdict.DENY: 0, Verdict.CONFIRM: 1, Verdict.ALLOW: 2}
 
 
 def _combine(*decisions: Decision) -> Decision:
-    """Most restrictive wins. Stated once, here, rather than as branch order."""
+    """Most restrictive wins. Stated once, here, rather than as branch order.
+
+    CONST-X-4: "any denial denies". The sources are peers — there is no
+    precedence between the policy's vocabulary and the gate's, and adding one
+    (letting an allow from either overrule a denial from the other) is the
+    specific thing the clause forbids, "however convenient".
+    """
     return min(decisions, key=lambda d: _ORDER[d.verdict])
 
 
-def _policy_decision(tool_name: str, policy: PolicyStore | None) -> Decision:
+def _policy_decision(tool_name: str, inputs: dict, policy: PolicyStore | None) -> Decision:
     if policy is None:
         return Decision(Verdict.ALLOW, "no policy store", "policy")
     try:
-        action = policy.decide(tool_name)
+        # Inputs go in so a scoped rule — `Bash(git status*)` — can read the
+        # command it is scoped to. An unscoped rule ignores them entirely.
+        action = policy.decide(tool_name, inputs)
     except Exception as exc:
-        # A broken policy file must not open the gate.
+        # A broken policy file must not open the gate. CONST-X-4: "an authority
+        # that fails to answer has denied (fail closed)".
         return Decision(Verdict.DENY, f"policy unreadable: {exc}", "error")
     if action == "deny":
         return Decision(Verdict.DENY, f"policy denied tool: {tool_name}", "policy")
@@ -97,7 +123,9 @@ def _gate_decision(tool_name: str, inputs: dict, gate: CapabilityGate | None) ->
 
     Kept as a separate vocabulary rather than merged into PolicyStore: they
     classify different things, and collapsing them would make one of the two
-    lie about what it checked.
+    lie about what it checked. CONST-X-4 wants them separate for a second
+    reason — two authorities that have been merged can no longer disagree, and
+    a concurrence rule over one authority checks nothing.
     """
     if gate is None or tool_name != "Bash":
         return Decision(Verdict.ALLOW, "", "gate")
@@ -110,6 +138,8 @@ def _gate_decision(tool_name: str, inputs: dict, gate: CapabilityGate | None) ->
     try:
         action = gate.classify(env)
     except Exception as exc:
+        # CONST-X-4, same rule as the policy side: a gate that cannot answer
+        # has denied. Both authorities fail closed or neither does.
         return Decision(Verdict.DENY, f"capability gate failed: {exc}", "error")
     finally:
         # Drain. The gate used to be a module-level singleton whose `pending`
@@ -139,7 +169,7 @@ def check(
     opposite of what writing the rule was for.
     """
     try:
-        policy_decision = _policy_decision(tool_name, policy)
+        policy_decision = _policy_decision(tool_name, inputs, policy)
         gate_decision = _gate_decision(tool_name, inputs, gate)
     except Exception as exc:  # pragma: no cover - defensive
         return Decision(Verdict.DENY, f"permission check failed: {exc}", "error")
@@ -147,7 +177,7 @@ def check(
     combined = _combine(policy_decision, gate_decision)
 
     if trusted and combined.verdict is Verdict.CONFIRM:
-        explicit = policy is not None and _has_explicit_rule(tool_name, policy)
+        explicit = policy is not None and _has_explicit_rule(tool_name, inputs, policy)
         if not explicit:
             return Decision(Verdict.ALLOW, "--trust relaxes the unmatched default", "trust")
         return Decision(combined.verdict, f"{combined.reason} (explicit rule; --trust does not override)", combined.source)
@@ -155,11 +185,18 @@ def check(
     return combined
 
 
-def _has_explicit_rule(tool_name: str, policy: PolicyStore) -> bool:
-    from fnmatch import fnmatch
+def _has_explicit_rule(tool_name: str, inputs: dict, policy: PolicyStore) -> bool:
+    """Did a rule someone wrote down actually answer this call?
+
+    It has to ask the same question `decide` asks, scope included. Matching on
+    the tool name alone would treat `Bash(git status*)` as an explicit rule for
+    every Bash call, so `--trust` would stop relaxing commands that rule never
+    mentioned — the opposite of what scoping it was for.
+    """
+    from ratatosk.policy import rule_matches
 
     try:
-        return any(fnmatch(tool_name, rule.pattern) for rule in policy.load())
+        return any(rule_matches(rule, tool_name, inputs) for rule in policy.load())
     except Exception:
         return True  # unreadable policy: treat as explicit, i.e. do not relax
 
