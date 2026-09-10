@@ -135,13 +135,20 @@ def replay(path: str | Path) -> Callable[[str, dict], str]:
     if doc.get("schema") != SCHEMA:
         raise ValueError(f"{path}: not a {SCHEMA} cassette (schema={doc.get('schema')!r})")
 
+    # Inputs were scrubbed on the way in, so the lookup has to be scrubbed on
+    # the way out too — otherwise a caller passing the real `content` it is
+    # sending could never match the placeholder on disk, and every replay
+    # raised UnrecordedCall. The scrub is length-preserving, so two sends that
+    # differ in what they carry still key differently.
+    keys = frozenset(doc.get("scrubbed_keys") or DEFAULT_SCRUB_KEYS)
+
     answers: dict[str, list[str]] = {}
     for item in doc["interactions"]:
         answers.setdefault(_key(item["tool"], item["inputs"]), []).append(item["result"])
     seen: dict[str, int] = {}
 
     def _call(tool: str, inputs: dict) -> str:
-        key = _key(tool, inputs)
+        key = _key(tool, _scrub_value(inputs, keys))
         recorded = answers.get(key)
         if recorded is None:
             raise UnrecordedCall(
