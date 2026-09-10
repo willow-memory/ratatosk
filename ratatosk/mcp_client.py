@@ -120,6 +120,38 @@ def _tool_schema(tool) -> dict:
     return schema or {}
 
 
+def decode_payloads(text: str) -> list:
+    """Decode the JSON values in a tool result — one document, or several.
+
+    `call` joins the text of every content chunk with a newline, and willow-mcp
+    routinely answers with one chunk per row: `grove_get_history` for three
+    messages returns three JSON objects, not one array. `json.loads` over the
+    whole string raises "Extra data" on exactly that, and both callers treated
+    the failure as "nothing here" — the listener parsed a real page of history
+    as zero messages, and a failure detail went unread as a successful send.
+
+    Returns every value parsed, in order. An empty list means nothing in the
+    string was JSON, which is a different answer from a single `null` and is
+    kept distinct so callers can tell them apart.
+    """
+    decoder = json.JSONDecoder()
+    values: list = []
+    index, length = 0, len(text)
+    while index < length:
+        while index < length and text[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            value, index = decoder.raw_decode(text, index)
+        except ValueError:
+            # Trailing content that is not JSON. Keep what did parse rather
+            # than discarding a real page over a malformed tail.
+            break
+        values.append(value)
+    return values
+
+
 def _is_error(result) -> bool:
     flag = getattr(result, "is_error", None)
     if flag is None:
