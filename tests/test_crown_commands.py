@@ -87,6 +87,54 @@ def test_explain_agrees_with_the_gate_that_actually_decides(tmp_path, monkeypatc
     assert decision.reason in explained
 
 
+def test_a_scoped_rule_with_spaces_can_actually_be_typed(tmp_path, monkeypatch, capsys):
+    """`set` used to require exactly three tokens, so `Bash(git status*)` —
+    the whole point of scoping — could not be entered at all."""
+    state = _state(tmp_path, monkeypatch)
+    router = CommandRouter(state)
+
+    assert router.run("/permissions set Bash(git status*) allow") is False
+    assert state.policy.decide("Bash", {"command": "git status --short"}) == "allow"
+    assert state.policy.decide("Bash", {"command": "rm -rf ~"}) == "confirm"
+
+    assert router.run("/permissions remove Bash(git status*)") is False
+    assert "removed" in capsys.readouterr().out
+
+
+def test_a_bad_action_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    state = _state(tmp_path, monkeypatch)
+    router = CommandRouter(state)
+
+    assert router.run("/permissions set Read banana") is False
+    assert "action must be one of" in capsys.readouterr().out
+
+
+def test_explain_reads_a_path_through_the_scope(tmp_path, monkeypatch, capsys):
+    state = _state(tmp_path, monkeypatch)
+    state.policy.set_rule("Write(/etc/*)", "deny")
+    router = CommandRouter(state)
+
+    router.run("/permissions explain Write /etc/passwd")
+    assert "Write -> deny" in capsys.readouterr().out
+
+    router.run("/permissions explain Write /home/me/notes.md")
+    assert "Write -> confirm" in capsys.readouterr().out
+
+
+def test_explain_shows_the_gate_overruling_a_policy_allow(tmp_path, monkeypatch, capsys):
+    """The two vocabularies are separate and most-restrictive wins. A scoped
+    `allow` on the policy side does not buy past the capability gate, and the
+    explainer has to show which source actually decided."""
+    state = _state(tmp_path, monkeypatch)
+    state.policy.set_rule("Bash(git status*)", "allow")
+    router = CommandRouter(state)
+
+    router.run("/permissions explain Bash git status --short")
+    out = capsys.readouterr().out
+    assert "Bash -> confirm" in out
+    assert "source: gate" in out
+
+
 def test_explain_notes_when_bash_had_no_command(tmp_path, monkeypatch, capsys):
     state = _state(tmp_path, monkeypatch)
     router = CommandRouter(state)
