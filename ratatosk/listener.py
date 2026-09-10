@@ -42,22 +42,37 @@ def _as_messages(result: Any) -> list[dict[str, Any]]:
         values = decode_payloads(text)
         if not values:
             return []
-        if len(values) > 1:
-            # willow-mcp answers with one content chunk per row, so a real page
-            # of history arrives as N concatenated objects rather than one
-            # array. `json.loads` over the whole string raised "Extra data" and
-            # this returned nothing — the same permanent no-op described above,
-            # from a different cause. An error object among them is not a page.
+        # willow-mcp answers with one content chunk per row, so a page arrives
+        # as N concatenated objects rather than one array — `json.loads` over
+        # the whole string raised "Extra data" and this returned nothing.
+        #
+        # Row count is not the discriminator, though. A one-message page is a
+        # single bare object, indistinguishable by length from the wrapped
+        # `{"result": [...]}` shape, and taking the wrapper path on a bare row
+        # asks it for a "result" key it does not have — which parsed a real
+        # one-message page as zero messages. Ask what the object *is*.
+        if len(values) == 1 and _is_wrapper(values[0]):
+            result = values[0]
+        else:
             rows = [v for v in values if isinstance(v, dict)]
             if any(row.get("error") for row in rows):
-                return []
+                return []  # an error among the rows is not a page
             return rows
-        result = values[0]
     if isinstance(result, dict):
         if result.get("error"):
             return []
         result = result.get("result", result.get("messages"))
     return result if isinstance(result, list) else []
+
+
+def _is_wrapper(value: Any) -> bool:
+    """True for the `{"result": [...]}` / `{"messages": [...]}` envelope shape.
+
+    Kept as a tolerated input rather than a claim: no willow-mcp tool has been
+    observed sending it, but a caller passing a pre-parsed page should still
+    work, and an error payload is routed through the same branch.
+    """
+    return isinstance(value, dict) and any(k in value for k in ("result", "messages", "error"))
 
 
 class BusListener:
@@ -136,15 +151,26 @@ class BusListener:
             response = handler(env)
             log_trace(env.trace_id, "executed", {"intent": env.intent})
             if self.mcp_call is not None:
-                self.mcp_call(
+                reply_channel = env.reply_channel or self.channel
+                sent = self.mcp_call(
                     "grove_send_message",
                     {
                         "app_id": os.environ.get("RATATOSK_APP_ID", "ratatosk"),
-                        "channel_name": env.reply_channel or self.channel,
+                        "channel_name": reply_channel,
                         "content": response,
                         "sender": self.node,
                     },
                 )
+                # The result was discarded, so a refused reply was
+                # indistinguishable from a delivered one: driving this against
+                # a live bus produced two answers, posted neither (the gate
+                # denied the sender), and reported success both times. grove
+                # already knows how to read these payloads — use it rather than
+                # keeping a second opinion here.
+                failure = grove._failure_detail(sent)
+                if failure is not None:
+                    log_trace(env.trace_id, "reply_failed", {"channel": reply_channel, "detail": failure})
+                    return f"[{self.node}] reply not delivered to {reply_channel}: {failure}"
             return response
         except Exception as exc:
             err = f"[{self.node}] error trace={env.trace_id}: {exc}"
