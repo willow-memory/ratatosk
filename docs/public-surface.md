@@ -45,7 +45,29 @@ and merging them would make one of the two lie about what it checked.
 - **`Decision` is frozen.** Its `verdict`, `reason` and `source` fields are
   stable; new fields may be added, existing ones may not change meaning.
 - **`--trust` is a layer below explicit rules.** It relaxes the unmatched
-  default only. An explicit `confirm` rule binds regardless.
+  default only. An explicit `confirm` rule binds regardless — including a
+  scoped one, for the call its scope actually names.
+- **A `policy.json` pattern may carry an argument scope**, and the extension is
+  additive. `Bash(git status*)` matches the tool name *and* the call's subject
+  (`command` for Bash, `file_path` for Read/Write/Edit, `notebook_path` for
+  NotebookEdit); a pattern with no parentheses matches on the name alone,
+  exactly as every pattern written before scopes existed does. Both halves are
+  `fnmatch` globs. Two refusals are part of the contract, not incidental:
+  a scoped rule **cannot match a call with no subject** (an undeclared tool, or
+  a caller that passed no inputs), and a scoped **`allow` never applies to a
+  shell command carrying control syntax** — `;`, `&&`, `|`, `$(`, redirects.
+  `deny` and `confirm` still do, because narrowing what a chained command may
+  do is safe and widening it is not. Removing either refusal is breaking.
+- **A scope narrows; it never widens.** A `Bash(...)` rule with action `allow`
+  cannot by itself produce `Verdict.ALLOW`, because the capability gate confirms
+  every shell call and the two authorities compose conjunctively. That is
+  **CONST-X-4** (the Concurrence Rule): *"no precedence hierarchy exists among
+  the six, and no implementation may create one: code that lets one authority's
+  approval override another's denial is unconstitutional however convenient."*
+  Scoped `deny` and `confirm` on Bash do take effect, and scopes reach `ALLOW`
+  normally for the file tools, which the gate does not speak about. A future
+  change that made a policy allow overrule the gate would not be a feature — it
+  is the thing the clause forbids.
 
 ## What this is not
 
