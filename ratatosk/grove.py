@@ -6,7 +6,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ratatosk.mcp_client import MCP_ERROR_PREFIX
+from ratatosk.mcp_client import MCP_ERROR_PREFIX, decode_payloads
 
 _SENDER = os.environ.get("WILLOW_AGENT_NAME", "ratatosk")
 _last_receipt: GroveReceipt | None = None
@@ -82,12 +82,14 @@ def _failure_detail(result) -> str | None:
             return "grove send returned an empty result"
         if text.startswith(MCP_ERROR_PREFIX):
             return text
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return None
-        if isinstance(payload, dict) and payload.get("error"):
-            return str(payload["error"])
+        # willow-mcp answers with one content chunk per row, so a result can be
+        # several concatenated JSON objects. `json.loads` over the whole string
+        # raised "Extra data" on exactly that and the except-branch read it as
+        # a successful post — a silent failure in the module whose docstring
+        # promises none.
+        for payload in decode_payloads(text):
+            if isinstance(payload, dict) and payload.get("error"):
+                return str(payload["error"])
         return None
     return None
 

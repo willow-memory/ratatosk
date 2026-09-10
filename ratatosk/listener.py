@@ -10,7 +10,7 @@ from typing import Any
 
 from ratatosk import grove, ollama
 from ratatosk.capabilities import ActionResult, CapabilityGate
-from ratatosk.mcp_client import MCP_ERROR_PREFIX
+from ratatosk.mcp_client import MCP_ERROR_PREFIX, decode_payloads
 from ratatosk.protocol.envelope import Envelope, Intent, parse_grove_message, validate_envelope
 from ratatosk.traces import log_trace
 
@@ -39,10 +39,20 @@ def _as_messages(result: Any) -> list[dict[str, Any]]:
         text = result.strip()
         if not text or text.startswith(MCP_ERROR_PREFIX):
             return []
-        try:
-            result = json.loads(text)
-        except ValueError:
+        values = decode_payloads(text)
+        if not values:
             return []
+        if len(values) > 1:
+            # willow-mcp answers with one content chunk per row, so a real page
+            # of history arrives as N concatenated objects rather than one
+            # array. `json.loads` over the whole string raised "Extra data" and
+            # this returned nothing — the same permanent no-op described above,
+            # from a different cause. An error object among them is not a page.
+            rows = [v for v in values if isinstance(v, dict)]
+            if any(row.get("error") for row in rows):
+                return []
+            return rows
+        result = values[0]
     if isinstance(result, dict):
         if result.get("error"):
             return []

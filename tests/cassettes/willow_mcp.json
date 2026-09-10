@@ -1,0 +1,41 @@
+{
+  "schema": "ratatosk-cassette/v1",
+  "recorded_at": "2026-09-10T15:46:05.898298+00:00",
+  "server": "/home/sean-campbell/sean-data-vault/willow-operator-box/venvs/willow-mcp/bin/python -m willow_mcp",
+  "scrubbed_keys": [
+    "content",
+    "detail",
+    "first_prompt",
+    "note",
+    "peek",
+    "prompt",
+    "sender",
+    "summary",
+    "text"
+  ],
+  "interactions": [
+    {
+      "tool": "grove_get_history",
+      "inputs": {
+        "app_id": "ratatosk",
+        "channel_name": "willow",
+        "limit": 3
+      },
+      "result": "{\n  \"id\": 267,\n  \"sender\": \"<scrubbed 6 chars>\",\n  \"content\": \"<scrubbed 1237 chars>\",\n  \"reply_to_id\": null,\n  \"reply_count\": 0,\n  \"created_at\": \"2026-07-07T17:33:23.037348\"\n}\n{\n  \"id\": 507,\n  \"sender\": \"<scrubbed 6 chars>\",\n  \"content\": \"<scrubbed 364 chars>\",\n  \"reply_to_id\": null,\n  \"reply_count\": 0,\n  \"created_at\": \"2026-09-07T15:55:17.990643\"\n}\n{\n  \"id\": 508,\n  \"sender\": \"<scrubbed 8 chars>\",\n  \"content\": \"<scrubbed 17 chars>\",\n  \"reply_to_id\": null,\n  \"reply_count\": 0,\n  \"created_at\": \"2026-09-07T16:19:13.181892\"\n}"
+    },
+    {
+      "tool": "grove_list_channels",
+      "inputs": {
+        "app_id": "ratatosk"
+      },
+      "result": "{\n  \"id\": 15,\n  \"name\": \"alerts\",\n  \"type\": \"group\",\n  \"description\": \"Alerts and incidents\"\n}\n{\n  \"id\": 10,\n  \"name\": \"architecture\",\n  \"type\": \"group\",\n  \"description\": \"Design and structure\"\n}\n{\n  \"id\": 3,\n  \"name\": \"auto\",\n  \"type\": \"persona\",\n  \"description\": \"Auto router\"\n}\n{\n  \"id\": 17,\n  \"name\": \"dashboard-ui\",\n  \"type\": \"group\",\n  \"description\": \"Dashboard UI worktree\"\n}\n{\n  \"id\": 16,\n  \"name\": \"dispatch\",\n  \"type\": \"group\",\n  \"description\": \"Agent dispatch queue\"\n}\n{\n  \"id\": 212,\n  \"name\": \"dm:hanuman\",\n  \"type\": \"direct\",\n  \"description\": \"Direct message with hanuman\"\n}\n{\n  \"id\": 12,\n  \"name\": \"fleet\",\n  \"type\": \"group\",\n  \"description\": \"Fleet status and ops\"\n}\n{\n  \"id\": 8,\n  \"name\": \"ganesha\",\n  \"type\": \"persona\",\n  \"description\": \"Ganesha\"\n}\n{\n  \"id\": 9,\n  \"name\": \"general\",\n  \"type\": \"persona\",\n  \"description\": \"Fleet-wide discussion\"\n}\n{\n  \"id\": 11,\n  \"name\": \"handoffs\",\n  \"type\": \"group\",\n  \"description\": \"Session handoffs\"\n}\n{\n  \"id\": 1,\n  \"name\": \"hanuman\",\n  \"type\": \"group\",\n  \"description\": null\n}\n{\n  \"id\": 6,\n  \"name\": \"heimdallr\",\n  \"type\": \"persona\",\n  \"description\": \"Heimdallr\"\n}\n{\n  \"id\": 5,\n  \"name\": \"loki\",\n  \"type\": \"persona\",\n  \"description\": \"Loki\"\n}\n{\n  \"id\": 230,\n  \"name\": \"oakenscroll\",\n  \"type\": \"group\",\n  \"description\": null\n}\n{\n  \"id\": 242,\n  \"name\": \"ops\",\n  \"type\": \"group\",\n  \"description\": null\n}\n{\n  \"id\": 13,\n  \"name\": \"readme\",\n  \"type\": \"group\",\n  \"description\": \"Project readme / onboarding\"\n}\n{\n  \"id\": 229,\n  \"name\": \"relay\",\n  \"type\": \"group\",\n  \"description\": null\n}\n{\n  \"id\": 213,\n  \"name\": \"stupid-human-things\",\n  \"type\": \"group\",\n  \"description\": \"#stupid-human-things\"\n}\n{\n  \"id\": 14,\n  \"name\": \"tonight\",\n  \"type\": \"group\",\n  \"description\": \"Tonight workstream\"\n}\n{\n  \"id\": 214,\n  \"name\": \"upstream\",\n  \"type\": \"group\",\n  \"description\": \"Upstream Steward \\u2014 reply drafts\"\n}\n{\n  \"id\": 7,\n  \"name\": \"vishwakarma\",\n  \"type\": \"persona\",\n  \"description\": \"Vishwakarma\"\n}\n{\n  \"id\": 231,\n  \"name\": \"willow\",\n  \"type\": \"group\",\n  \"description\": null\n}\n{\n  \"id\": 18,\n  \"name\": \"willow-grove\",\n  \"type\": \"group\",\n  \"description\": \"Grove app development\"\n}"
+    },
+    {
+      "tool": "no_such_tool",
+      "inputs": {
+        "app_id": "ratatosk"
+      },
+      "result": "[mcp-error] [TextContent(type='text', text='Unknown tool: no_such_tool', annotations=None, meta=None)]"
+    }
+  ]
+}
