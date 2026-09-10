@@ -16,7 +16,7 @@ from ratatosk.history import ensure_history_db, index_session, list_sessions, lo
 from ratatosk.hooks import HookRuntime
 from ratatosk.capabilities import CapabilityGate
 from ratatosk.permission import check as _permission_check
-from ratatosk.policy import PolicyStore, shadowed_rules
+from ratatosk.policy import PolicyStore, shadowed_rules, subject_field
 from ratatosk.redact import redact
 
 _HOME = Path.home()
@@ -362,10 +362,11 @@ class CommandRouter:
         if parts[0] == "explain" and len(parts) >= 2:
             tool_name = parts[1]
             rest = arg.split(maxsplit=2)[2] if len(parts) > 2 else ""
-            # Bash is the one tool the capability gate speaks about, and it
-            # classifies the command text — so an explain with no command
-            # answers a different question than the real call would.
-            inputs = {"command": rest} if tool_name == "Bash" and rest else {}
+            # Put the free text where a scoped rule would look for it, so
+            # `explain Bash git status` and `explain Write /etc/passwd` both
+            # ask the question the real call would ask.
+            field = subject_field(tool_name)
+            inputs = {field: rest} if field and rest else {}
             decision = _permission_check(
                 tool_name,
                 inputs,
@@ -376,16 +377,25 @@ class CommandRouter:
             print(f"  {tool_name} -> {decision.verdict.value}")
             print(f"  reason: {decision.reason or '(none given)'}")
             print(f"  source: {decision.source}")
-            if tool_name == "Bash" and not rest:
-                print("  note: no command given, so the capability gate saw an empty one")
+            if field and not rest:
+                print(f"  note: no {field} given, so a rule scoped to one could not match")
             print("  (dry run — nothing was executed)")
             return False
-        if parts[0] == "set" and len(parts) == 3:
-            self.state.policy.set_rule(parts[1], parts[2])
-            print(f"  rule set: {parts[1]} -> {parts[2]}")
+        # The pattern is everything between the verb and the action, not one
+        # token: a scoped pattern contains spaces (`Bash(git status*)`) and
+        # splitting on whitespace made it untypeable.
+        if parts[0] == "set" and len(parts) >= 3:
+            pattern, action = " ".join(parts[1:-1]), parts[-1]
+            try:
+                self.state.policy.set_rule(pattern, action)
+            except ValueError as exc:
+                print(f"  {exc}")
+                return False
+            print(f"  rule set: {pattern} -> {action}")
             return False
-        if parts[0] == "remove" and len(parts) == 2:
-            removed = self.state.policy.remove_rule(parts[1])
+        if parts[0] == "remove" and len(parts) >= 2:
+            pattern = " ".join(parts[1:])
+            removed = self.state.policy.remove_rule(pattern)
             print("  removed" if removed else "  rule not found")
             return False
         print(
