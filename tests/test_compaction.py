@@ -1,4 +1,5 @@
 """Compaction never orphans a tool_result."""
+from ratatosk import session as _session
 from ratatosk.crown import _MAX_TURNS, _compact, _orphans, _safe_start
 
 
@@ -115,7 +116,7 @@ def test_the_budget_counts_the_system_prompt_and_tool_schemas():
         path = "p"
 
     history = [{"role": "user", "content": "x" * 100} for _ in range(10)]
-    assert _compact(history)[1] is False
+    assert _compact(history)[1] is None, "no compaction, so no receipt"
 
     fat = RuntimeState(
         args=argparse.Namespace(local=True, trust=False, mcp=True, listen=False, deposit=False),
@@ -133,5 +134,69 @@ def test_the_budget_counts_the_system_prompt_and_tool_schemas():
     # Same history, but the overhead alone now exceeds the budget, so it must
     # trim even though the turn cap is nowhere near.
     kept, compacted = _compact(history, fat)
-    assert compacted is True
+    assert compacted is not None, "the budget bit, so there is a receipt"
     assert len(kept) < len(history) + 1
+
+
+def test_the_receipt_counts_what_was_actually_dropped():
+    """"keeping last 20 turns" was a constant, not a measurement."""
+    history = [{"role": "user", "content": "x" * 50} for _ in range(60)]
+    kept, receipt = _compact(history)
+
+    assert receipt is not None
+    assert receipt.dropped == len(history) - receipt.kept
+    assert receipt.kept == len(kept) - 1, "the notice is not a kept message"
+    assert receipt.chars_after < receipt.chars_before
+    assert str(receipt.dropped) in receipt.describe()
+
+
+def test_the_receipt_names_which_limit_bit():
+    over_turns = [{"role": "user", "content": "x"} for _ in range(60)]
+    assert _compact(over_turns)[1].reason == "turn cap"
+
+    from ratatosk.crown import _MAX_CHARS
+
+    over_budget = [{"role": "user", "content": "x" * (_MAX_CHARS // 4)} for _ in range(6)]
+    assert _compact(over_budget)[1].reason == "budget"
+
+
+def test_a_compaction_leaves_a_mark_in_the_transcript(tmp_path, monkeypatch, capsys):
+    """The transcript half is the point: /resume reads the JSONL and the tier-0
+    deposit carries it, so a compaction with no mark there is a gap the record
+    cannot show — the session just looks shorter than it was."""
+    from ratatosk.crown import CompactionReceipt, _record_compaction
+
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "sessions"))
+    writer = _session.SessionWriter(cwd=str(tmp_path))
+
+    class _State:
+        pass
+
+    state = _State()
+    state.writer = writer
+
+    _record_compaction(state, CompactionReceipt(dropped=7, kept=3, chars_before=100, chars_after=40, reason="budget"))
+
+    entries = writer.read_entries()
+    assert len(entries) == 1
+    assert entries[0]["type"] == "system"
+    assert "compacted 7 message(s)" in entries[0]["message"]["content"]
+    assert "compacted 7 message(s)" in capsys.readouterr().out
+
+
+def test_a_broken_writer_cannot_end_the_session(capsys):
+    from ratatosk.crown import CompactionReceipt, _record_compaction
+
+    class _Boom:
+        def write_system(self, _text):
+            raise OSError("disk gone")
+
+    class _State:
+        pass
+
+    state = _State()
+    state.writer = _Boom()
+
+    _record_compaction(state, CompactionReceipt(1, 1, 10, 5, "budget"))
+    assert "receipt not written" in capsys.readouterr().out
