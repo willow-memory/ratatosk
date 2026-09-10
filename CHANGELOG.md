@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/willow-memory/ratatosk/compare/v1.4.4...v1.5.0) (2026-09-10)
+
+
+### Added
+
+* **crown:** give compaction a receipt ([#36](https://github.com/willow-memory/ratatosk/issues/36)) ([799794e](https://github.com/willow-memory/ratatosk/commit/799794e52e18f0abb6cb95fda465786ffe286551))
+
 ## [1.4.4](https://github.com/willow-memory/ratatosk/compare/v1.4.3...v1.4.4) (2026-09-10)
 
 
