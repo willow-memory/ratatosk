@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.3](https://github.com/willow-memory/ratatosk/compare/v1.4.2...v1.4.3) (2026-09-10)
+
+
+### Fixed
+
+* **mcp:** decode concatenated results, and record real ones to prove it ([5f30e58](https://github.com/willow-memory/ratatosk/commit/5f30e58a5797a23a39d3cbf636bbf5ae78834768))
+* **mcp:** decode concatenated results, and record real ones to prove it ([#34](https://github.com/willow-memory/ratatosk/issues/34)) ([fdfd491](https://github.com/willow-memory/ratatosk/commit/fdfd49135d657ff94770b6b0f7621d81fef22264))
+
 ## [1.4.2](https://github.com/willow-memory/ratatosk/compare/v1.4.1...v1.4.2) (2026-09-10)
 
 
