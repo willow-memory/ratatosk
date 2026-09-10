@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.4](https://github.com/willow-memory/ratatosk/compare/v1.4.3...v1.4.4) (2026-09-10)
+
+
+### Fixed
+
+* **listener:** a one-row page is a page, and a refused reply is not a reply ([948451e](https://github.com/willow-memory/ratatosk/commit/948451ec9bf7a3ec84f2f6735f5bf1cc0269fd23))
+* **listener:** a one-row page is a page, and a refused reply is not a reply ([#38](https://github.com/willow-memory/ratatosk/issues/38)) ([cedec4a](https://github.com/willow-memory/ratatosk/commit/cedec4a020acad170e6c7db3b5044d8a1106336d))
+
 ## [1.4.3](https://github.com/willow-memory/ratatosk/compare/v1.4.2...v1.4.3) (2026-09-10)
 
 
