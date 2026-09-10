@@ -15,6 +15,43 @@ class PolicyRule:
     action: str  # allow|deny|confirm
 
 
+@dataclass(frozen=True)
+class ShadowedRule:
+    """A rule `decide` can never reach, and the earlier rule that eats it."""
+
+    index: int
+    rule: PolicyRule
+    by_index: int
+    by: PolicyRule
+
+
+def shadowed_rules(rules: list[PolicyRule]) -> list[ShadowedRule]:
+    """Rules an earlier pattern already answers for, so `decide` never reaches them.
+
+    `decide` returns the first pattern that matches and `set_rule` inserts at
+    the front, so a broad pattern quietly makes every later rule dead. They
+    still print in `/permissions list` exactly like live ones — the operator
+    reads a rule that has no effect and believes it. That is the lie this
+    closes; it does not change which verdict `decide` returns.
+
+    The test is deliberately conservative: a later rule is reported only when
+    an earlier pattern matches its literal text, which settles the ordinary
+    cases (`*` before `Bash`, `Ba*` before `Bash*`). Patterns that merely
+    overlap in part are left alone. A missed shadow prints as it does today,
+    whereas a false one would accuse a live rule of being dead — and an
+    operator who deletes a rule on that advice has been actively misled.
+    """
+    found: list[ShadowedRule] = []
+    for later_index, later in enumerate(rules):
+        for earlier_index, earlier in enumerate(rules[:later_index]):
+            if fnmatch(later.pattern, earlier.pattern):
+                found.append(
+                    ShadowedRule(index=later_index, rule=later, by_index=earlier_index, by=earlier)
+                )
+                break
+    return found
+
+
 class PolicyStore:
     def __init__(self, path: Path | None = None):
         self.path = path or (ratatosk_data_root() / "policy.json")
@@ -45,6 +82,10 @@ class PolicyStore:
     def save(self, rules: list[PolicyRule]) -> None:
         payload = {"rules": [{"pattern": r.pattern, "action": r.action} for r in rules]}
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def shadowed(self) -> list[ShadowedRule]:
+        """The rules on disk that are unreachable. Read-only; changes nothing."""
+        return shadowed_rules(self.load())
 
     def decide(self, tool_name: str) -> str:
         for rule in self.load():
