@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.11](https://github.com/willow-memory/ratatosk/compare/v1.2.10...v1.2.11) (2026-09-10)
+
+
+### Fixed
+
+* **crown:** enforce that --listen requires --mcp ([b49da70](https://github.com/willow-memory/ratatosk/commit/b49da70e462bb5ccda21907d27ab178038303292))
+* **crown:** make the --listen path fail honestly ([#24](https://github.com/willow-memory/ratatosk/issues/24)) ([1a4abbb](https://github.com/willow-memory/ratatosk/commit/1a4abbbebe185a12431fbaabce0dbc94e5a6c2d9))
+* **crown:** tear the MCP server down when the listener refuses ([c53e6c4](https://github.com/willow-memory/ratatosk/commit/c53e6c45ed891034b2d2fd1762a1eab7cb45aabf))
+
 ## [1.2.10](https://github.com/willow-memory/ratatosk/compare/v1.2.9...v1.2.10) (2026-09-07)
 
 
