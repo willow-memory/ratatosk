@@ -118,3 +118,61 @@ def test_channel_env_reads_at_call_time(monkeypatch):
     assert grove.channel_env() == "one"
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "two")
     assert grove.channel_env() == "two"
+
+
+def test_connect_binds_a_sender_that_actually_posts(monkeypatch):
+    """The gap this closes: crown bound a sender inside its --mcp branch and
+    nowhere else, so every other caller had to reimplement that wiring — and
+    a seat probe that did not got "sender not configured" however the box was
+    configured (Grove #willow msg 507)."""
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
+    grove.set_grove_sender(None)
+    seen = {}
+
+    bound = grove.connect(lambda name, inputs: seen.update(inputs) or "{}")
+    assert bound.ok
+    assert "fleet" in bound.detail
+
+    receipt = grove.send("hello")
+    assert receipt.ok
+    assert seen["channel_name"] == "fleet"
+
+
+def test_connect_without_a_channel_is_skipped_not_failed(monkeypatch):
+    """An unset channel is a normal state, not an error."""
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    bound = grove.connect(lambda name, inputs: "{}")
+    assert bound.ok
+    assert bound.skipped
+
+
+def test_connect_reports_a_transport_that_will_not_start(monkeypatch):
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
+    grove.set_grove_sender(None)
+
+    import ratatosk.mcp_client as mcp_client
+
+    def boom(*a, **k):
+        raise RuntimeError("no server here")
+
+    monkeypatch.setattr(mcp_client, "start", boom)
+    bound = grove.connect()
+    assert not bound.ok
+    assert "no server here" in bound.detail
+    assert grove.send("hello").ok is False, "an unbound sender must still refuse"
+
+
+def test_disable_gives_skipped_receipts_not_repeated_failures(monkeypatch):
+    """A session posts a start and an end event. An unbound sender makes the
+    operator read the same complaint once per event; an explicitly disabled
+    one says it at startup and then stays quiet."""
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "willow")
+    grove.disable("no MCP transport in this process")
+
+    started = grove.session_started("abcd1234", "test-model")
+    ended = grove.session_ended("abcd1234", 3, "/tmp/x.jsonl")
+
+    for receipt in (started, ended):
+        assert receipt.ok
+        assert receipt.skipped
+        assert "no MCP transport" in receipt.detail

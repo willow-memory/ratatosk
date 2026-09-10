@@ -62,3 +62,20 @@ def test_ctrl_c_still_tears_the_server_down(fake_mcp, monkeypatch, capsys):
 
     assert fake_mcp["called"]
     assert "stopped" in capsys.readouterr().out
+
+
+def test_a_channel_without_mcp_is_announced_at_startup(monkeypatch, capsys, tmp_path):
+    """The operator set a channel and gets no posts. Say so at startup rather
+    than leaving it to a failed receipt mid-session."""
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "willow")
+    monkeypatch.setattr("sys.argv", ["ratatosk", "--local"])
+    monkeypatch.setattr("builtins.input", lambda *_a: "/exit")
+
+    try:
+        crown.main()
+    except SystemExit:
+        pass
+
+    out = capsys.readouterr().out
+    assert "channel #willow is set but --mcp was not passed" in out

@@ -531,6 +531,20 @@ def main() -> None:
     if args.listen and not args.mcp:
         parser.error("--listen requires --mcp: the bus listener speaks to willow-mcp over stdio")
 
+    # A configured channel and no transport is a misconfiguration the operator
+    # should hear about at startup, not discover in a failed receipt halfway
+    # through a session. Not an error: running without --mcp is legitimate, and
+    # this refuses to guess that a channel means "start a server for me".
+    if _grove.channel_env() and not args.mcp:
+        print(
+            f"  [grove] channel #{_grove.channel_env()} is set but --mcp was not passed — "
+            "session events will not post",
+            flush=True,
+        )
+        # Said once, here. Without this the start and end events each fail
+        # separately and repeat it.
+        _grove.disable("no MCP transport in this process")
+
     ensure_history_db()
     policy = PolicyStore()
     hooks = HookRuntime()
@@ -546,7 +560,9 @@ def main() -> None:
 
         mcp_extra_tools, mcp_names = mcp_client.start()
         mcp_call = mcp_client.call
-        _grove.set_grove_sender(_grove.make_mcp_sender(mcp_call))
+        bound = _grove.connect(mcp_call)
+        if not bound.ok:
+            print(f"  [grove] {bound.detail}", flush=True)
         print(f"  [mcp] {len(mcp_names)} tools loaded", flush=True)
         if args.listen:
             from ratatosk.listener import BusListener
