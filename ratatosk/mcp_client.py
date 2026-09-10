@@ -13,6 +13,7 @@ import os
 import shlex
 import sys
 import threading
+import time
 from pathlib import Path
 
 MCP_ERROR_PREFIX = "[mcp-error]"
@@ -21,6 +22,15 @@ _mcp_session = None
 _mcp_loop: asyncio.AbstractEventLoop | None = None
 _mcp_stop_event: asyncio.Event | None = None
 _mcp_thread: threading.Thread | None = None
+
+#: What `start` was called with, so a reconnect can repeat it exactly.
+_mcp_argv: list[str] | None = None
+_last_reconnect: float = 0.0
+
+#: Seconds between reconnect attempts. A server that is down stays down for a
+#: while, and a listener polling every 2s would otherwise respawn it — and its
+#: Postgres connections — dozens of times a minute while it fails.
+RECONNECT_COOLDOWN = 15.0
 
 
 def default_mcp_argv() -> list[str]:
@@ -82,9 +92,10 @@ async def _lifecycle(argv: list[str], ready: threading.Event) -> None:
 
 
 def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
-    global _mcp_loop, _mcp_thread
+    global _mcp_loop, _mcp_thread, _mcp_argv
 
     argv = argv or default_mcp_argv()
+    _mcp_argv = argv  # remembered so reconnect() can repeat it exactly
     loop = asyncio.new_event_loop()
     _mcp_loop = loop
     ready = threading.Event()
@@ -159,15 +170,64 @@ def _is_error(result) -> bool:
     return bool(flag)
 
 
+def is_live() -> bool:
+    """Whether there is a session and a thread still running it."""
+    return _mcp_session is not None and _mcp_thread is not None and _mcp_thread.is_alive()
+
+
+def reconnect() -> bool:
+    """Start the server again after it has died. Returns whether it came back.
+
+    Nothing retried before: once the server was gone every `call` returned an
+    `[mcp-error]` for the rest of the process. A REPL session ends soon enough
+    that a human notices, but `--listen` is meant to run for days on a phone,
+    where the first crash silenced it permanently and nothing said so.
+
+    Rate-limited rather than eager. A server that is down tends to stay down,
+    and a listener polling every two seconds would otherwise respawn it — and
+    its Postgres connections — dozens of times a minute while it fails.
+    """
+    global _last_reconnect
+
+    if _mcp_argv is None:
+        return False  # never started; there is nothing to repeat
+    now = time.monotonic()
+    if now - _last_reconnect < RECONNECT_COOLDOWN:
+        return False
+    _last_reconnect = now
+
+    try:
+        shutdown(timeout=5.0)  # reap whatever is left of the old one
+    except Exception:
+        pass
+    try:
+        start(_mcp_argv)
+        return is_live()
+    except Exception:
+        return False
+
+
 def call(name: str, inputs: dict) -> str:
     try:
-        result = _mcp_call_sync(_mcp_session.call_tool(name, inputs))
-        if _is_error(result):
-            return f"{MCP_ERROR_PREFIX} {result.content}"
-        parts = [chunk.text for chunk in result.content if hasattr(chunk, "text")]
-        return "\n".join(parts) if parts else json.dumps(str(result.content))
+        return _call_once(name, inputs)
     except Exception as exc:
-        return f"{MCP_ERROR_PREFIX} {exc}"
+        # A tool that *answers* with an error never lands here — that is
+        # `_is_error`, handled inside `_call_once`. An exception means the
+        # transport failed, which is the only thing worth reconnecting for.
+        if not reconnect():
+            return f"{MCP_ERROR_PREFIX} {exc}"
+        try:
+            return _call_once(name, inputs)
+        except Exception as retry_exc:
+            return f"{MCP_ERROR_PREFIX} {retry_exc} (after reconnect)"
+
+
+def _call_once(name: str, inputs: dict) -> str:
+    result = _mcp_call_sync(_mcp_session.call_tool(name, inputs))
+    if _is_error(result):
+        return f"{MCP_ERROR_PREFIX} {result.content}"
+    parts = [chunk.text for chunk in result.content if hasattr(chunk, "text")]
+    return "\n".join(parts) if parts else json.dumps(str(result.content))
 
 
 def shutdown(timeout: float = 10.0) -> bool:
