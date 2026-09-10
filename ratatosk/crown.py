@@ -108,10 +108,50 @@ def _size(history: list[dict]) -> int:
     )
 
 
-def _compact(history: list[dict], state: "RuntimeState | None" = None) -> tuple[list[dict], bool]:
+@dataclass(frozen=True)
+class CompactionReceipt:
+    """What a compaction actually dropped.
+
+    Compaction used to report itself as "keeping last 20 turns" whatever it
+    did — but the loop below drops by *budget*, so it routinely keeps fewer,
+    and with MCP connected the tool schemas can eat most of the budget before
+    any history is counted. The number in the message was a constant, not a
+    measurement.
+
+    Nothing reached the transcript either. The note went into the model's
+    history only, so the JSONL — what `/resume` reads and what the tier-0
+    deposit carries — had no record that anything was forgotten. A session
+    resumed after compaction looked like a session that had simply been short.
+    """
+
+    dropped: int
+    kept: int
+    chars_before: int
+    chars_after: int
+    #: "turn cap" or "budget" — which limit actually bit.
+    reason: str
+
+    def describe(self) -> str:
+        return (
+            f"compacted {self.dropped} message(s), kept {self.kept} "
+            f"({self.chars_before:,}→{self.chars_after:,} chars, {self.reason})"
+        )
+
+
+def _compact(
+    history: list[dict], state: "RuntimeState | None" = None
+) -> tuple[list[dict], CompactionReceipt | None]:
+    """Trim history to fit, and say what that cost.
+
+    Returns the receipt rather than a bare flag; `None` means nothing was
+    dropped. It stays truthy-on-compaction so existing `if compacted:` callers
+    read the same.
+    """
     budget = _MAX_CHARS - _overhead(state)
-    if _size(history) <= budget and len(history) <= _MAX_TURNS * 2:
-        return history, False
+    size_before = _size(history)
+    over_turns = len(history) > _MAX_TURNS * 2
+    if size_before <= budget and not over_turns:
+        return history, None
 
     start = _safe_start(history, max(0, len(history) - _MAX_TURNS * 2))
 
@@ -136,12 +176,35 @@ def _compact(history: list[dict], state: "RuntimeState | None" = None) -> tuple[
 
     dropped = len(history) - len(keep)
     if dropped == 0:
-        return history, False
+        return history, None
     notice = {
         "role": "user",
         "content": f"[System note: compacted {dropped} earlier messages. Continue from current context.]",
     }
-    return [notice] + keep, True
+    kept = [notice] + keep
+    receipt = CompactionReceipt(
+        dropped=dropped,
+        kept=len(keep),
+        chars_before=size_before,
+        chars_after=_size(kept),
+        # Which limit bit: over the turn cap even at full size, or over budget.
+        reason="turn cap" if over_turns and size_before <= budget else "budget",
+    )
+    return kept, receipt
+
+
+def _record_compaction(state: "RuntimeState", receipt: CompactionReceipt) -> None:
+    """Tell the operator and the transcript what was forgotten.
+
+    The transcript half is the point. `/resume` reads the JSONL and the tier-0
+    deposit carries it, so a compaction that leaves no mark there is a gap the
+    record cannot show — the session simply looks shorter than it was.
+    """
+    print(f"  [compacted] {receipt.describe()}", flush=True)
+    try:
+        state.writer.write_system(f"[compacted] {receipt.describe()}")
+    except Exception as exc:  # a receipt must not be able to end the session
+        print(f"  [compacted] receipt not written: {exc}", flush=True)
 
 
 def _load_system_prompt() -> str:
@@ -432,11 +495,13 @@ class CommandRouter:
         before = len(self.state.history)
         self.state.history, compacted = _compact(self.state.history, self.state)
         if compacted:
-            message = f"[Compacted local history to last {_MAX_TURNS} turns.]"
+            # "to last 20 turns" was a constant, not a measurement — the budget
+            # loop routinely keeps fewer. Report what it did.
+            message = f"[compacted] {compacted.describe()}"
             if arg:
                 message += f" [{arg}]"
             self.state.writer.write_system(message)
-            print("  compacted")
+            print(f"  {message}")
         else:
             print("  no compaction needed")
         self.state.hooks.run_event("PostCompact", {"before": before, "after": len(self.state.history)})
@@ -461,7 +526,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         state.history.append({"role": "assistant", "content": text})
         state.history, compacted = _compact(state.history, state)
         if compacted:
-            print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
+            _record_compaction(state, compacted)
         return
 
     while True:
@@ -486,7 +551,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         if not tool_uses:
             state.history, compacted = _compact(state.history, state)
             if compacted:
-                print(f"  [compacted — keeping last {_MAX_TURNS} turns]")
+                _record_compaction(state, compacted)
             break
 
         tool_results = []
