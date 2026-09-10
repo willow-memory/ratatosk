@@ -143,3 +143,48 @@ def test_the_reply_loop_is_closed(monkeypatch):
     assert listener.run_once() == []
     assert listener.run_once() == []
     assert len(history) == 2
+
+
+def test_a_refused_reply_is_reported_not_swallowed(monkeypatch):
+    """Driven against a live bus, the listener produced two answers, posted
+    neither — the gate refused the sender — and reported success both times,
+    because the send result was discarded."""
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "ratatosk-smoke")
+    refusals = []
+
+    def refusing_call(tool, inputs):
+        refusals.append(tool)
+        return '{"error": "sender_forbidden", "detail": "needs grove_relay"}'
+
+    listener = BusListener(node="ratatosk", channel="ratatosk-smoke", mcp_call=refusing_call)
+    out = listener.process_message(
+        {
+            "sender": "willow",
+            "content": '{"v":1,"to":"ratatosk","intent":"open_status","prompt":"status",'
+                       '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
+                       '"nonce":"n1","trace_id":"tr-refused","expires_at":"2099-01-01T00:00:00Z",'
+                       '"requires_confirm":false}',
+        }
+    )
+    assert refusals == ["grove_send_message"], "it must have tried"
+    assert "not delivered" in out
+    assert "sender_forbidden" in out
+
+
+def test_a_delivered_reply_returns_the_answer(monkeypatch):
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "ratatosk-smoke")
+    listener = BusListener(
+        node="ratatosk", channel="ratatosk-smoke",
+        mcp_call=lambda tool, inputs: '{"id": 1, "channel": "ratatosk-smoke", "sent": true}',
+    )
+    out = listener.process_message(
+        {
+            "sender": "willow",
+            "content": '{"v":1,"to":"ratatosk","intent":"open_status","prompt":"status",'
+                       '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
+                       '"nonce":"n2","trace_id":"tr-ok","expires_at":"2099-01-01T00:00:00Z",'
+                       '"requires_confirm":false}',
+        }
+    )
+    assert out.startswith("node=ratatosk")
+    assert "not delivered" not in out

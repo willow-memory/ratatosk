@@ -136,3 +136,33 @@ def test_recorder_scrubs_before_it_stores(tmp_path):
     path = recorder.save(tmp_path / "c.json", server="python -m willow_mcp")
 
     assert "load-bearing secret" not in path.read_text(encoding="utf-8")
+
+
+SMOKE_HISTORY = ("grove_get_history", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke", "limit": 1})
+SEND_OK = ("grove_send_message", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke",
+                                  "content": "[ratatosk] cassette refresh", "sender": "ratatosk"})
+SEND_REFUSED = ("grove_send_message", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke",
+                                       "content": "[ratatosk] refusal probe", "sender": "not-ratatosk"})
+
+
+def test_a_one_message_page_is_one_message():
+    """A single bare row is indistinguishable by length from the wrapped
+    `{"result": [...]}` shape. Taking the wrapper path on it asked for a
+    "result" key it does not have, and a real one-message page parsed as
+    zero — found by driving a live channel that held exactly one message."""
+    assert len(_as_messages(replay(CASSETTE)(*SMOKE_HISTORY))) == 1
+
+
+def test_a_real_send_success_is_not_read_as_a_failure():
+    """The recorded shape is {"id", "channel", "sent"} — no "result" wrapper,
+    which is what the hand-written fakes assumed."""
+    assert grove._failure_detail(replay(CASSETTE)(*SEND_OK)) is None
+
+
+def test_a_real_send_refusal_is_read_as_one():
+    detail = grove._failure_detail(replay(CASSETTE)(*SEND_REFUSED))
+    assert detail is not None and "sender_forbidden" in detail
+
+
+def test_an_unknown_tool_is_a_transport_error():
+    assert grove._failure_detail(replay(CASSETTE)("no_such_tool", {"app_id": "ratatosk"})).startswith("[mcp-error]")
