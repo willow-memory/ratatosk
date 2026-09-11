@@ -66,9 +66,10 @@ class JsonlTailWatcher:
 
     Generic on purpose: this class knows nothing about Nestor, seals, or
     SOIL. It is handed a ledger path, a predicate over the parsed record
-    (``lambda record: record.get("op") == "seal"`` for the seal case), a
+    (``lambda record: record.get("kind") == "seal"`` for the seal case), a
     callback, and a path to persist the read offset. Any other JSONL ledger
-    watched for any other op is the same class with a different predicate.
+    watched for any other kind of record is the same class with a different
+    predicate.
 
     Delivery guarantee — read this before wiring a consumer: the offset is
     persisted PER RECORD, immediately after that record's callback returns
@@ -277,6 +278,7 @@ class SeatDaemon:
         seal_ledger_path: str | Path | None = None,
         seal_offset_path: str | Path | None = None,
         on_seal: Callable[[dict], None] | None = None,
+        seal_predicate: Callable[[dict], bool] | None = None,
     ):
         # Raises ValueError on an unset channel — same refusal as
         # BusListener/crown --listen, inherited rather than duplicated.
@@ -305,7 +307,7 @@ class SeatDaemon:
             )
             self.seal_watcher = JsonlTailWatcher(
                 ledger_path=ledger_path,
-                op_predicate=lambda record: record.get("op") == "seal",
+                op_predicate=seal_predicate or (lambda record: record.get("kind") == "seal"),
                 callback=on_seal or default_on_seal,
                 offset_store_path=offset_path,
             )

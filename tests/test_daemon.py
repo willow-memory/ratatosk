@@ -160,13 +160,13 @@ def test_poll_seal_ledger_fires_on_seal_callback_once(tmp_path):
     seen = []
     daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
     (tmp_path / "ledger.jsonl").write_text(
-        json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n"
+        json.dumps({"kind": "seal", "nestor_pair_id": "p1"}) + "\n"
     )
 
     dispatched = daemon.poll_seal_ledger()
 
     assert dispatched == 1
-    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
 
 
 def test_seal_watcher_restart_does_not_refire(tmp_path):
@@ -174,15 +174,81 @@ def test_seal_watcher_restart_does_not_refire(tmp_path):
     process restart) does not re-emit a seal already dispatched."""
     seen = []
     ledger = tmp_path / "ledger.jsonl"
-    ledger.write_text(json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n")
+    ledger.write_text(json.dumps({"kind": "seal", "nestor_pair_id": "p1"}) + "\n")
 
     _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
-    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
 
     # Fresh daemon instance, same ledger + offset path — the restart.
     dispatched = _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
     assert dispatched == 0
-    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
+
+
+def test_default_seal_predicate_matches_the_real_nestor_ledger_shape(tmp_path):
+    """The real Nestor ledger keys the record type as ``kind``, not ``op``
+    (e.g. ``{"ts","prev","kind":"seal","pair_id","verifier",...}``). The
+    default predicate — used whenever no ``seal_predicate`` override is
+    given — must fire on that shape without any consumer-side config."""
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    record = {
+        "ts": "2026-09-11T00:00:00Z",
+        "prev": None,
+        "kind": "seal",
+        "pair_id": "p1",
+        "verifier": "sean",
+        "source_lang": "decision",
+        "target_lang": "en",
+        "source_sha": "abc123",
+        "origin": "willow-mcp",
+        "upgraded_from": None,
+    }
+    (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [record]
+
+
+def test_default_seal_predicate_does_not_match_legacy_op_only_shape(tmp_path):
+    """A record that only has the legacy ``op`` field (no ``kind``) must NOT
+    match the default predicate — that field name does not exist on the real
+    ledger, and matching it would be the same bug this default replaces."""
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    (tmp_path / "ledger.jsonl").write_text(
+        json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 0
+    assert seen == []
+
+
+def test_caller_supplied_seal_predicate_overrides_the_default(tmp_path):
+    """A consumer that wants domain narrowing (e.g. only decision-lane seals)
+    supplies its own predicate; SeatDaemon must honor it instead of the
+    ``kind == "seal"`` default."""
+    seen = []
+    daemon = _daemon_with_ledger(
+        tmp_path,
+        on_seal=seen.append,
+        seal_predicate=lambda record: record.get("kind") == "seal"
+        and record.get("source_lang") == "decision",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"kind": "seal", "source_lang": "other", "id": 1}) + "\n"
+        + json.dumps({"kind": "seal", "source_lang": "decision", "id": 2}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [{"kind": "seal", "source_lang": "decision", "id": 2}]
 
 
 def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(tmp_path, monkeypatch):
@@ -232,7 +298,7 @@ def test_raising_on_seal_does_not_kill_the_heartbeat_and_retries_only_the_bad_re
 
     daemon = _daemon_with_ledger(tmp_path, on_seal=on_seal, mcp_call=mcp_call)
     daemon.heartbeat_interval = 0  # heartbeat due on every tick
-    (tmp_path / "ledger.jsonl").write_text(json.dumps({"op": "seal", "id": 1}) + "\n")
+    (tmp_path / "ledger.jsonl").write_text(json.dumps({"kind": "seal", "id": 1}) + "\n")
     daemon.request_stop()
 
     statuses = []
@@ -240,14 +306,14 @@ def test_raising_on_seal_does_not_kill_the_heartbeat_and_retries_only_the_bad_re
 
     assert "grove_heartbeat" in calls
     assert statuses[-1] == "stopped"
-    assert invocations == [{"op": "seal", "id": 1}]
+    assert invocations == [{"kind": "seal", "id": 1}]
     assert any("seal watch error" in s for s in statuses)
 
     # A second, independent poll call still fails on the same record — the
     # failure surfaces every time, not just once, and it's the same record
     # retried, not something new.
     assert daemon.poll_seal_ledger(statuses.append) == 0
-    assert invocations == [{"op": "seal", "id": 1}, {"op": "seal", "id": 1}]
+    assert invocations == [{"kind": "seal", "id": 1}, {"kind": "seal", "id": 1}]
     assert any("seal watch error" in s for s in statuses[-2:])
 
 
