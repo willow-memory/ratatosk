@@ -39,6 +39,7 @@ dev = [
 
 [project.scripts]
 ratatosk = "ratatosk.crown:main"
+ratatosk-listen = "ratatosk.daemon:main"
 
 [project.urls]
 Homepage = "https://github.com/willow-memory/ratatosk"
