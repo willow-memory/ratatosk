@@ -70,18 +70,44 @@ class JsonlTailWatcher:
     callback, and a path to persist the read offset. Any other JSONL ledger
     watched for any other op is the same class with a different predicate.
 
-    Restart-safe: the offset is written to disk after every successful poll,
-    so a fresh process picks up exactly where the last one left off — a
-    restart does not re-emit records the callback already saw. A partial
-    trailing line (the writer is still mid-append) is left unconsumed; it is
-    read whole on a later poll once its newline lands.
+    Delivery guarantee — read this before wiring a consumer: the offset is
+    persisted PER RECORD, immediately after that record's callback returns
+    successfully, not once at the end of a batch. That makes a crash or a
+    raising callback resume exactly after the last *successfully processed*
+    record — every earlier record in the batch is never re-fired. The one
+    remaining gap is the single record whose callback is still running (or
+    just returned) when the process dies before the offset write lands on
+    disk: that one record can be delivered twice on restart. This is
+    therefore an **at-least-once** watcher, not exactly-once, and ``on_seal``
+    /``callback`` MUST be idempotent (safe to run twice on the same record).
+    Do not build a consumer here that assumes exactly-once delivery.
+
+    A partial trailing line (the writer is still mid-append) is left
+    unconsumed; it is read whole on a later poll once its newline lands.
 
     Fails loud, not silent: a line that does not parse as JSON is logged and
-    skipped — its bytes are still consumed so it is not retried forever — and
-    the watch continues. An I/O error reading the ledger is logged with
-    ``exc_info`` and re-raised; the caller (``SeatDaemon.poll_seal_ledger``)
-    catches it so one bad poll cannot kill the heartbeat, and the next poll
-    retries the read from the last persisted offset.
+    skipped — its bytes are still consumed (and that consumption persisted)
+    so it is not retried forever — and the watch continues. A callback that
+    raises on a parse-OK record stops the batch right there: the exception is
+    logged with ``exc_info`` and re-raised, the offset is NOT advanced past
+    the failing record (every prior record in the batch is already
+    committed), and the next poll retries only that record. A permanently
+    failing record therefore surfaces on every single poll — via the raised
+    exception, which ``SeatDaemon.poll_seal_ledger`` turns into a repeated
+    ``on_status``/log line — rather than silently wedging the watcher forever
+    with no signal.
+
+    Rotation/truncation-safe: if the ledger's current size is smaller than
+    the persisted offset (the file was truncated, or rotated to a fresh file
+    at the same path) the offset is reset to 0 and the ledger is re-read from
+    the start, rather than seeking past EOF and silently missing everything
+    written after rotation. An inode change is treated the same way when it
+    can be observed within a single process's lifetime.
+
+    An I/O error reading the ledger is logged with ``exc_info`` and
+    re-raised; the caller (``SeatDaemon.poll_seal_ledger``) catches it so one
+    bad poll cannot kill the heartbeat, and the next poll retries the read
+    from the last persisted offset.
     """
 
     def __init__(
@@ -95,6 +121,12 @@ class JsonlTailWatcher:
         self.op_predicate = op_predicate
         self.callback = callback
         self.offset_store_path = Path(offset_store_path)
+        # Best-effort, in-process-only rotation signal: persisted offset vs.
+        # ledger size already catches truncation/rotation across restarts;
+        # this catches an inode swap observed within one process's lifetime
+        # (e.g. logrotate's create-new-file-same-name) without needing to
+        # persist the inode across restarts.
+        self._last_seen_inode: int | None = None
 
     def _load_offset(self) -> int:
         try:
@@ -127,10 +159,34 @@ class JsonlTailWatcher:
         malformed line (logged and skipped); a genuine read/IO error is
         logged with ``exc_info`` and re-raised so the caller decides whether
         and when to retry.
+
+        The offset is saved after EVERY consumed line, not once at the end —
+        see the class docstring for exactly what guarantee that does (and
+        does not) buy. A callback that raises stops the loop immediately,
+        without saving past the failing record, and re-raises after logging;
+        every record processed earlier in this same call is already
+        persisted and will not be re-delivered.
         """
         offset = self._load_offset()
         try:
             with open(self.ledger_path, "rb") as handle:
+                stat = os.fstat(handle.fileno())
+                size = stat.st_size
+                inode = stat.st_ino
+                rotated = size < offset or (
+                    self._last_seen_inode is not None and inode != self._last_seen_inode
+                )
+                if rotated:
+                    logger.warning(
+                        "seal watcher: ledger %s appears rotated or truncated "
+                        "(size=%d, persisted offset=%d) — resetting to 0",
+                        self.ledger_path,
+                        size,
+                        offset,
+                    )
+                    offset = 0
+                    self._save_offset(0)
+                self._last_seen_inode = inode
                 handle.seek(offset)
                 data = handle.read()
         except FileNotFoundError:
@@ -144,16 +200,18 @@ class JsonlTailWatcher:
         if not data:
             return 0
 
-        consumed = 0
+        pos = offset
         dispatched = 0
         for raw_line in data.splitlines(keepends=True):
             if not raw_line.endswith(b"\n"):
                 # Partial trailing line — the writer is still mid-append.
                 # Leave it unconsumed; a later poll reads it whole.
                 break
-            consumed += len(raw_line)
+            line_len = len(raw_line)
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
+                pos += line_len
+                self._save_offset(pos)
                 continue
             try:
                 record = json.loads(line)
@@ -163,13 +221,23 @@ class JsonlTailWatcher:
                     self.ledger_path,
                     exc_info=True,
                 )
+                pos += line_len
+                self._save_offset(pos)
                 continue
             if self.op_predicate(record):
-                self.callback(record)
+                try:
+                    self.callback(record)
+                except Exception:
+                    logger.error(
+                        "seal watcher: on_seal raised for record in %s — "
+                        "not advancing past it, will retry next poll",
+                        self.ledger_path,
+                        exc_info=True,
+                    )
+                    raise
                 dispatched += 1
-
-        if consumed:
-            self._save_offset(offset + consumed)
+            pos += line_len
+            self._save_offset(pos)
         return dispatched
 
 
@@ -268,14 +336,17 @@ class SeatDaemon:
     def poll_seal_ledger(self, on_status: Callable[[str], None] | None = None) -> int:
         """Poll the seal ledger once, if a watcher is configured.
 
-        Runs on the same cadence as the heartbeat (see ``run_forever``) —
-        both are cheap, occasional checks and sharing one clock keeps the
-        loop simple. Deliberately isolated with its own try/except: a raise
-        out of ``JsonlTailWatcher.poll`` (an IO error, most likely) is
-        surfaced via logging (already done inside ``poll``, with
-        ``exc_info``) and via ``on_status``, but swallowed here so it cannot
-        take the heartbeat down with it. The next call retries from the
-        last persisted offset — the watch never silently dies.
+        Runs on ``poll_interval`` cadence (see ``run_forever``) — the same
+        tick as the bus poll — not on the slower ``heartbeat_interval``, so a
+        seal is picked up within one poll_interval instead of waiting for the
+        next heartbeat. Deliberately isolated with its own try/except: a
+        raise out of ``JsonlTailWatcher.poll`` (an IO error, or a raising
+        ``on_seal`` callback stuck on one record) is surfaced via logging
+        (already done inside ``poll``, with ``exc_info``) and via
+        ``on_status`` — on every call, so a permanently-failing record cannot
+        wedge silently — but swallowed here so it cannot take the heartbeat
+        down with it. The next call retries from the last persisted offset —
+        the watch never silently dies.
         """
         if self.seal_watcher is None:
             return 0
@@ -313,14 +384,16 @@ class SeatDaemon:
             except Exception as exc:
                 if on_status:
                     on_status(f"poll error: {exc}")
+            # Decoupled cadences: the seal ledger is polled every loop tick
+            # (poll_interval — the same tick the bus poll already runs on),
+            # independent of the heartbeat, which still fires only every
+            # heartbeat_interval. Each call is independently guarded
+            # (poll_seal_ledger never raises) so a bad ledger read cannot
+            # suppress the heartbeat, and a heartbeat failure does not skip
+            # the seal poll either — order here does not create a dependency.
+            self.poll_seal_ledger(on_status)
             if self._heartbeat_due(time.monotonic()):
-                # Shared cadence: the seal watch rides the heartbeat clock.
-                # Each call is independently guarded (poll_seal_ledger never
-                # raises) so a bad ledger read cannot suppress the heartbeat
-                # that follows it, and a heartbeat failure does not skip the
-                # seal poll either — order here does not create a dependency.
                 self.emit_heartbeat()
-                self.poll_seal_ledger(on_status)
             self._stop.wait(self.listener.poll_interval)
         self._stop.clear()
         if on_status:
