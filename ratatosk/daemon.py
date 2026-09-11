@@ -19,21 +19,33 @@ same envelope protocol, no REPL.
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import os
 import signal
 import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from ratatosk import grove
 from ratatosk.listener import BusListener
+from ratatosk.paths import ratatosk_data_root
 from ratatosk.protocol.envelope import Envelope
+
+logger = logging.getLogger(__name__)
 
 #: How often to post a Grove heartbeat while idle. A wake still gets answered
 #: on the next poll_interval tick regardless of where we are in this clock —
 #: the heartbeat and the message loop are independent schedules.
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
+
+#: Ledger path env override for the seal watcher (mirrors
+#: RATATOSK_GROVE_CHANNEL's read-at-call-time convention). Unset means the
+#: watcher is not constructed — dark-safe, no ledger to watch by default.
+SEAL_LEDGER_ENV = "RATATOSK_SEAL_LEDGER"
+SEAL_OFFSET_ENV = "RATATOSK_SEAL_OFFSET"
 
 
 def default_activate(env: Envelope) -> str:
@@ -47,6 +59,133 @@ def default_activate(env: Envelope) -> str:
     raising or silently dropping it.
     """
     return f"[ratatosk] wake trace={env.trace_id} received — no seat runtime wired"
+
+
+class JsonlTailWatcher:
+    """Tails an append-only JSONL ledger and dispatches matching records.
+
+    Generic on purpose: this class knows nothing about Nestor, seals, or
+    SOIL. It is handed a ledger path, a predicate over the parsed record
+    (``lambda record: record.get("op") == "seal"`` for the seal case), a
+    callback, and a path to persist the read offset. Any other JSONL ledger
+    watched for any other op is the same class with a different predicate.
+
+    Restart-safe: the offset is written to disk after every successful poll,
+    so a fresh process picks up exactly where the last one left off — a
+    restart does not re-emit records the callback already saw. A partial
+    trailing line (the writer is still mid-append) is left unconsumed; it is
+    read whole on a later poll once its newline lands.
+
+    Fails loud, not silent: a line that does not parse as JSON is logged and
+    skipped — its bytes are still consumed so it is not retried forever — and
+    the watch continues. An I/O error reading the ledger is logged with
+    ``exc_info`` and re-raised; the caller (``SeatDaemon.poll_seal_ledger``)
+    catches it so one bad poll cannot kill the heartbeat, and the next poll
+    retries the read from the last persisted offset.
+    """
+
+    def __init__(
+        self,
+        ledger_path: str | Path,
+        op_predicate: Callable[[dict], bool],
+        callback: Callable[[dict], None],
+        offset_store_path: str | Path,
+    ):
+        self.ledger_path = Path(ledger_path)
+        self.op_predicate = op_predicate
+        self.callback = callback
+        self.offset_store_path = Path(offset_store_path)
+
+    def _load_offset(self) -> int:
+        try:
+            text = self.offset_store_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return 0
+        if not text:
+            return 0
+        try:
+            return int(text)
+        except ValueError:
+            logger.error(
+                "seal watcher: corrupt offset store %s, restarting from 0",
+                self.offset_store_path,
+                exc_info=True,
+            )
+            return 0
+
+    def _save_offset(self, offset: int) -> None:
+        self.offset_store_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.offset_store_path.with_name(self.offset_store_path.name + ".tmp")
+        tmp.write_text(str(offset), encoding="utf-8")
+        tmp.replace(self.offset_store_path)
+
+    def poll(self) -> int:
+        """Read whatever new complete lines exist, dispatch the matches.
+
+        Returns the number of records the callback was invoked for. Never
+        raises for a missing ledger file (nothing to watch yet) or a
+        malformed line (logged and skipped); a genuine read/IO error is
+        logged with ``exc_info`` and re-raised so the caller decides whether
+        and when to retry.
+        """
+        offset = self._load_offset()
+        try:
+            with open(self.ledger_path, "rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+        except FileNotFoundError:
+            return 0
+        except OSError:
+            logger.error(
+                "seal watcher: failed reading ledger %s", self.ledger_path, exc_info=True
+            )
+            raise
+
+        if not data:
+            return 0
+
+        consumed = 0
+        dispatched = 0
+        for raw_line in data.splitlines(keepends=True):
+            if not raw_line.endswith(b"\n"):
+                # Partial trailing line — the writer is still mid-append.
+                # Leave it unconsumed; a later poll reads it whole.
+                break
+            consumed += len(raw_line)
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                logger.error(
+                    "seal watcher: malformed line in %s, skipping",
+                    self.ledger_path,
+                    exc_info=True,
+                )
+                continue
+            if self.op_predicate(record):
+                self.callback(record)
+                dispatched += 1
+
+        if consumed:
+            self._save_offset(offset + consumed)
+        return dispatched
+
+
+def default_on_seal(record: dict) -> None:
+    """Log-only default seal handler — dark-safe to ship without a consumer.
+
+    The intended consumer of a seal watch is a willow-mcp handler that, on a
+    ``seal`` record, upgrades the matching SOIL governance record (keyed by
+    ``nestor_pair_id``) to ``status=sealed`` with ``verifier`` + ``seal_sig``
+    and enqueues a notice. Building that handler is a SEPARATE willow-mcp
+    task — out of scope here. This default only proves the watch fired, so
+    an unconfigured daemon says something honest about the seal it saw
+    instead of raising or silently dropping it (same shape as
+    ``default_activate`` above).
+    """
+    logger.info("seal observed: %s", record)
 
 
 class SeatDaemon:
@@ -67,6 +206,9 @@ class SeatDaemon:
         activate: Callable[[Envelope], str] | None = None,
         poll_interval: float = 2.0,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        seal_ledger_path: str | Path | None = None,
+        seal_offset_path: str | Path | None = None,
+        on_seal: Callable[[dict], None] | None = None,
     ):
         # Raises ValueError on an unset channel — same refusal as
         # BusListener/crown --listen, inherited rather than duplicated.
@@ -80,6 +222,25 @@ class SeatDaemon:
         self.heartbeat_interval = heartbeat_interval
         self._stop = threading.Event()
         self._last_heartbeat = 0.0
+
+        # Seal watch is opt-in: no ledger path (explicit or via
+        # RATATOSK_SEAL_LEDGER) means no watcher is built at all — a daemon
+        # with nothing configured behaves exactly as it did before this
+        # feature existed.
+        ledger_path = seal_ledger_path or os.environ.get(SEAL_LEDGER_ENV)
+        self.seal_watcher: JsonlTailWatcher | None = None
+        if ledger_path:
+            offset_path = (
+                seal_offset_path
+                or os.environ.get(SEAL_OFFSET_ENV)
+                or (ratatosk_data_root() / "seal_watch.offset")
+            )
+            self.seal_watcher = JsonlTailWatcher(
+                ledger_path=ledger_path,
+                op_predicate=lambda record: record.get("op") == "seal",
+                callback=on_seal or default_on_seal,
+                offset_store_path=offset_path,
+            )
 
     @property
     def node(self) -> str:
@@ -104,6 +265,35 @@ class SeatDaemon:
     def _heartbeat_due(self, now: float) -> bool:
         return (now - self._last_heartbeat) >= self.heartbeat_interval
 
+    def poll_seal_ledger(self, on_status: Callable[[str], None] | None = None) -> int:
+        """Poll the seal ledger once, if a watcher is configured.
+
+        Runs on the same cadence as the heartbeat (see ``run_forever``) —
+        both are cheap, occasional checks and sharing one clock keeps the
+        loop simple. Deliberately isolated with its own try/except: a raise
+        out of ``JsonlTailWatcher.poll`` (an IO error, most likely) is
+        surfaced via logging (already done inside ``poll``, with
+        ``exc_info``) and via ``on_status``, but swallowed here so it cannot
+        take the heartbeat down with it. The next call retries from the
+        last persisted offset — the watch never silently dies.
+        """
+        if self.seal_watcher is None:
+            return 0
+        try:
+            dispatched = self.seal_watcher.poll()
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+            if on_status:
+                on_status(f"seal watch error: {exc}")
+            return 0
+        # A heartbeat-style trace on *every* poll, match or not — this is
+        # what makes "the ledger has been quiet" distinguishable from "the
+        # watcher stopped running": the former keeps logging zero, the
+        # latter stops logging at all.
+        logger.debug("seal watch poll: %d seal(s) observed", dispatched)
+        if on_status and dispatched:
+            on_status(f"seal watch: {dispatched} seal(s) observed")
+        return dispatched
+
     def run_forever(self, on_status: Callable[[str], None] | None = None) -> None:
         """Run until ``request_stop`` is called (or, pre-set, return at once).
 
@@ -116,6 +306,7 @@ class SeatDaemon:
         if on_status:
             on_status(f"listening on {self.channel} as {self.node}")
         self.emit_heartbeat()
+        self.poll_seal_ledger(on_status)
         while not self._stop.is_set():
             try:
                 self.listener.run_once()
@@ -123,7 +314,13 @@ class SeatDaemon:
                 if on_status:
                     on_status(f"poll error: {exc}")
             if self._heartbeat_due(time.monotonic()):
+                # Shared cadence: the seal watch rides the heartbeat clock.
+                # Each call is independently guarded (poll_seal_ledger never
+                # raises) so a bad ledger read cannot suppress the heartbeat
+                # that follows it, and a heartbeat failure does not skip the
+                # seal poll either — order here does not create a dependency.
                 self.emit_heartbeat()
+                self.poll_seal_ledger(on_status)
             self._stop.wait(self.listener.poll_interval)
         self._stop.clear()
         if on_status:
