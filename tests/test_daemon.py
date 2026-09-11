@@ -7,6 +7,8 @@ job and is covered in test_listener.py; these tests cover only what SeatDaemon
 adds: heartbeat scheduling, wake activation wiring, and a stop signal that
 run_forever actually honors.
 """
+import json
+
 import pytest
 
 from ratatosk.daemon import DEFAULT_HEARTBEAT_INTERVAL, SeatDaemon, default_activate
@@ -124,3 +126,110 @@ def test_default_activate_is_honest_about_no_runtime_wired():
 
 def test_default_heartbeat_interval_is_positive():
     assert DEFAULT_HEARTBEAT_INTERVAL > 0
+
+
+def _daemon_with_ledger(tmp_path, on_seal=None, mcp_call=None, **kw):
+    if mcp_call is None:
+        def mcp_call(tool, inputs):
+            return "{}"
+
+    return SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        seal_ledger_path=tmp_path / "ledger.jsonl",
+        seal_offset_path=tmp_path / "offset",
+        on_seal=on_seal,
+        **kw,
+    )
+
+
+def test_no_seal_watcher_is_built_when_no_ledger_configured():
+    """Dark-safe default: nothing configured means no watcher object exists,
+    not a watcher pointed at an empty path."""
+
+    def mcp_call(tool, inputs):
+        return "{}"
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+    assert daemon.seal_watcher is None
+    assert daemon.poll_seal_ledger() == 0
+
+
+def test_poll_seal_ledger_fires_on_seal_callback_once(tmp_path):
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    (tmp_path / "ledger.jsonl").write_text(
+        json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+
+
+def test_seal_watcher_restart_does_not_refire(tmp_path):
+    """A new SeatDaemon built against the same offset path (the shape of a
+    process restart) does not re-emit a seal already dispatched."""
+    seen = []
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n")
+
+    _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
+    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+
+    # Fresh daemon instance, same ledger + offset path — the restart.
+    dispatched = _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
+    assert dispatched == 0
+    assert seen == [{"op": "seal", "nestor_pair_id": "p1"}]
+
+
+def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(tmp_path, monkeypatch):
+    """One watcher raising must not kill the heartbeat: force the seal poll
+    to explode and confirm run_forever still emits its heartbeat and stops
+    cleanly rather than propagating the exception."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = _daemon_with_ledger(tmp_path, mcp_call=mcp_call)
+    daemon.heartbeat_interval = 0  # heartbeat due on every tick
+
+    def _boom():
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(daemon.seal_watcher, "poll", _boom)
+    daemon.request_stop()
+
+    statuses = []
+    daemon.run_forever(on_status=statuses.append)
+
+    assert "grove_heartbeat" in calls
+    assert statuses[-1] == "stopped"
+    assert any("seal watch error" in s for s in statuses)
+
+
+def test_heartbeat_still_fires_when_the_ledger_is_quiet(tmp_path):
+    """No seals appended at all — the heartbeat must not depend on the
+    ledger having anything to report."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        seal_ledger_path=tmp_path / "ledger.jsonl",  # never created
+        seal_offset_path=tmp_path / "offset",
+    )
+    daemon.request_stop()
+    daemon.run_forever()
+
+    assert calls.count("grove_heartbeat") == 1
+    assert daemon.poll_seal_ledger() == 0
