@@ -42,6 +42,11 @@ class CapabilityGate:
             Intent.OPEN_STATUS.value,
             Intent.SUMMARIZE.value,
             Intent.REPLY.value,
+            # A wake is the fleet's own activation signal, not a remote
+            # command — it carries no shell/task capability, only "you have
+            # a packet". Gating it behind confirmation like RUN_TASK would
+            # mean no seat could ever wake unattended.
+            Intent.WAKE.value,
         }:
             return ActionResult.EXECUTED
         return ActionResult.DEGRADED

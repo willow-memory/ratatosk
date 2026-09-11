@@ -171,6 +171,63 @@ def test_a_refused_reply_is_reported_not_swallowed(monkeypatch):
     assert "sender_forbidden" in out
 
 
+def test_wake_dispatches_to_the_seat_runtime(monkeypatch):
+    """A WAKE envelope activates the seat runtime rather than getting a canned
+    reply — the daemon's `activate` callback stands in for that runtime."""
+    calls = []
+
+    def activate(env):
+        calls.append(env.trace_id)
+        return f"[seat] worked packet {env.trace_id}"
+
+    listener = BusListener(node="ratatosk", channel="general", mcp_call=None, activate=activate)
+    out = listener.process_message(
+        {
+            "sender": "willow",
+            "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
+                       '"reply_channel":"general","mode":"ollama","capabilities":[],'
+                       '"nonce":"wake1","trace_id":"tr-wake-1","expires_at":"2099-01-01T00:00:00Z",'
+                       '"requires_confirm":false}',
+        }
+    )
+    assert calls == ["tr-wake-1"]
+    assert out == "[seat] worked packet tr-wake-1"
+
+
+def test_wake_without_activate_acknowledges_but_does_nothing():
+    listener = BusListener(node="ratatosk", channel="general", mcp_call=None)
+    out = listener.process_message(
+        {
+            "sender": "willow",
+            "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
+                       '"reply_channel":"general","mode":"ollama","capabilities":[],'
+                       '"nonce":"wake2","trace_id":"tr-wake-2","expires_at":"2099-01-01T00:00:00Z",'
+                       '"requires_confirm":false}',
+        }
+    )
+    assert "tr-wake-2" in out
+    assert "no activation wired" in out
+
+
+def test_emit_heartbeat_posts_grove_heartbeat():
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append((tool, inputs))
+        return "{}"
+
+    listener = BusListener(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+    assert listener.emit_heartbeat() is True
+    assert calls[0][0] == "grove_heartbeat"
+    assert calls[0][1]["agent"] == "ratatosk"
+    assert calls[0][1]["channel"] == "fleet"
+
+
+def test_emit_heartbeat_is_a_noop_without_transport():
+    listener = BusListener(node="ratatosk", channel="fleet", mcp_call=None)
+    assert listener.emit_heartbeat() is False
+
+
 def test_a_delivered_reply_returns_the_answer(monkeypatch):
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "ratatosk-smoke")
     listener = BusListener(

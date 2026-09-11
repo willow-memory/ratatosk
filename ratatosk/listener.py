@@ -83,6 +83,7 @@ class BusListener:
         channel: str | None = None,
         mcp_call=None,
         poll_interval: float = 2.0,
+        activate: Handler | None = None,
     ):
         self.node = node or os.environ.get("WILLOW_AGENT_NAME", "ratatosk")
         # Same reader as grove.send(), and the same answer. This used to fall
@@ -96,6 +97,12 @@ class BusListener:
             )
         self.mcp_call = mcp_call
         self.poll_interval = poll_interval
+        # Called for a WAKE envelope — activating the seat's own runtime to
+        # work the assigned packet is not this module's job to know how to
+        # do. A daemon wires its own; a bare BusListener (crown's --listen,
+        # or a test) falls back to acknowledging the wake without acting on
+        # it, same as an unregistered intent always has.
+        self.activate = activate or self._handle_wake_noop
         self.state = ListenerState(node=self.node, channel=self.channel)
         self._register_defaults()
 
@@ -106,6 +113,7 @@ class BusListener:
         self.state.handlers[Intent.OPEN_STATUS.value] = self._handle_status
         self.state.handlers[Intent.RUN_TASK.value] = self._handle_run_task
         self.state.handlers[Intent.SHELL.value] = self._handle_shell_blocked
+        self.state.handlers[Intent.WAKE.value] = self._handle_wake
 
     def _handle_chat(self, env: Envelope) -> str:
         if not ollama.is_available():
@@ -118,6 +126,12 @@ class BusListener:
 
     def _handle_run_task(self, env: Envelope) -> str:
         return f"[ratatosk] task queued for confirmation trace={env.trace_id}"
+
+    def _handle_wake(self, env: Envelope) -> str:
+        return self.activate(env)
+
+    def _handle_wake_noop(self, env: Envelope) -> str:
+        return f"[ratatosk] wake received trace={env.trace_id} — no activation wired"
 
     def _handle_shell_blocked(self, env: Envelope) -> str:
         return "[ratatosk] shell intent blocked — use run_task with confirmation"
@@ -176,6 +190,26 @@ class BusListener:
             err = f"[{self.node}] error trace={env.trace_id}: {exc}"
             log_trace(env.trace_id, "error", {"error": str(exc)})
             return err
+
+    def emit_heartbeat(self) -> bool:
+        """Post a Grove heartbeat for this seat. Returns whether one was sent.
+
+        Silent (returns False) with no ``mcp_call`` — the same posture as
+        ``fetch_messages`` above it — because a heartbeat with nowhere to go
+        is not this method's failure to report; the daemon that owns the
+        schedule already knows it has no transport.
+        """
+        if self.mcp_call is None:
+            return False
+        self.mcp_call(
+            "grove_heartbeat",
+            {
+                "app_id": os.environ.get("RATATOSK_APP_ID", "ratatosk"),
+                "agent": self.node,
+                "channel": self.channel,
+            },
+        )
+        return True
 
     def fetch_messages(self) -> list[dict[str, Any]]:
         if self.mcp_call is None:

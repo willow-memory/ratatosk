@@ -1,0 +1,390 @@
+"""SeatDaemon — the heartbeating, stoppable wrapper around BusListener that
+makes the fleet wake its own seats instead of the orchestrator hand-spawning
+workers.
+
+Grove protocol behavior (channel refusal, validation, gating) is BusListener's
+job and is covered in test_listener.py; these tests cover only what SeatDaemon
+adds: heartbeat scheduling, wake activation wiring, and a stop signal that
+run_forever actually honors.
+"""
+import json
+
+import pytest
+
+from ratatosk.daemon import DEFAULT_HEARTBEAT_INTERVAL, SeatDaemon, default_activate
+
+
+def test_daemon_binds_the_configured_channel():
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=None)
+    assert daemon.channel == "fleet"
+    assert daemon.node == "ratatosk"
+
+
+def test_daemon_refuses_an_unset_channel(monkeypatch):
+    """Builds on BusListener's PR-22 refusal (commit 70a994d) rather than
+    reimplementing it — SeatDaemon must inherit the same guard, not silently
+    default to some channel."""
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    with pytest.raises(ValueError, match="grove channel unset"):
+        SeatDaemon(mcp_call=None)
+
+
+def test_daemon_emits_a_heartbeat():
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append((tool, inputs))
+        return "{}"
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+    assert daemon.emit_heartbeat() is True
+    assert calls == [("grove_heartbeat", {"app_id": "ratatosk", "agent": "ratatosk", "channel": "fleet"})]
+
+
+def test_run_forever_emits_a_heartbeat_on_start_then_stops_cleanly():
+    """Liveness is observable the moment the daemon comes up, not only after
+    the first heartbeat interval elapses — and a pre-armed stop is honored
+    before any polling happens (clean shutdown)."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+    daemon.request_stop()  # armed before the loop starts
+
+    statuses = []
+    daemon.run_forever(on_status=statuses.append)
+
+    assert "grove_heartbeat" in calls
+    assert "grove_get_history" not in calls, "stop must be honored before polling begins"
+    assert statuses[0] == "listening on fleet as ratatosk"
+    assert statuses[-1] == "stopped"
+
+
+def test_restart_is_idempotent():
+    """Stop, then run again on the same instance — no accumulated state, no
+    crash, no double-registration of anything."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+
+    daemon.request_stop()
+    daemon.run_forever()
+    first_heartbeats = calls.count("grove_heartbeat")
+    assert first_heartbeats == 1
+
+    daemon.request_stop()
+    daemon.run_forever()
+    assert calls.count("grove_heartbeat") == first_heartbeats + 1
+
+
+def test_wake_message_activates_the_seat_runtime():
+    """End to end through run_once: a wake on the bus reaches the mocked seat
+    activation, not a canned acknowledgement."""
+    activated = []
+
+    def activate(env):
+        activated.append(env.trace_id)
+        return f"worked {env.trace_id}"
+
+    history = [
+        {
+            "id": 1,
+            "sender": "willow",
+            "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
+                       '"reply_channel":"fleet","mode":"ollama","capabilities":[],'
+                       '"nonce":"wk1","trace_id":"tr-daemon-wake","expires_at":"2099-01-01T00:00:00Z",'
+                       '"requires_confirm":false}',
+        }
+    ]
+
+    def mcp_call(tool, inputs):
+        if tool == "grove_get_history":
+            return {"result": list(history)}
+        return {}
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call, activate=activate)
+    outputs = daemon.listener.run_once()
+
+    assert activated == ["tr-daemon-wake"]
+    assert outputs == ["worked tr-daemon-wake"]
+
+
+def test_default_activate_is_honest_about_no_runtime_wired():
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(to="ratatosk", prompt="", intent="wake", capabilities=[])
+    out = default_activate(env)
+    assert "no seat runtime wired" in out
+
+
+def test_default_heartbeat_interval_is_positive():
+    assert DEFAULT_HEARTBEAT_INTERVAL > 0
+
+
+def _daemon_with_ledger(tmp_path, on_seal=None, mcp_call=None, **kw):
+    if mcp_call is None:
+        def mcp_call(tool, inputs):
+            return "{}"
+
+    return SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        seal_ledger_path=tmp_path / "ledger.jsonl",
+        seal_offset_path=tmp_path / "offset",
+        on_seal=on_seal,
+        **kw,
+    )
+
+
+def test_no_seal_watcher_is_built_when_no_ledger_configured():
+    """Dark-safe default: nothing configured means no watcher object exists,
+    not a watcher pointed at an empty path."""
+
+    def mcp_call(tool, inputs):
+        return "{}"
+
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
+    assert daemon.seal_watcher is None
+    assert daemon.poll_seal_ledger() == 0
+
+
+def test_poll_seal_ledger_fires_on_seal_callback_once(tmp_path):
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    (tmp_path / "ledger.jsonl").write_text(
+        json.dumps({"kind": "seal", "nestor_pair_id": "p1"}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
+
+
+def test_seal_watcher_restart_does_not_refire(tmp_path):
+    """A new SeatDaemon built against the same offset path (the shape of a
+    process restart) does not re-emit a seal already dispatched."""
+    seen = []
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({"kind": "seal", "nestor_pair_id": "p1"}) + "\n")
+
+    _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
+
+    # Fresh daemon instance, same ledger + offset path — the restart.
+    dispatched = _daemon_with_ledger(tmp_path, on_seal=seen.append).poll_seal_ledger()
+    assert dispatched == 0
+    assert seen == [{"kind": "seal", "nestor_pair_id": "p1"}]
+
+
+def test_default_seal_predicate_matches_the_real_nestor_ledger_shape(tmp_path):
+    """The real Nestor ledger keys the record type as ``kind``, not ``op``
+    (e.g. ``{"ts","prev","kind":"seal","pair_id","verifier",...}``). The
+    default predicate — used whenever no ``seal_predicate`` override is
+    given — must fire on that shape without any consumer-side config."""
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    record = {
+        "ts": "2026-09-11T00:00:00Z",
+        "prev": None,
+        "kind": "seal",
+        "pair_id": "p1",
+        "verifier": "sean",
+        "source_lang": "decision",
+        "target_lang": "en",
+        "source_sha": "abc123",
+        "origin": "willow-mcp",
+        "upgraded_from": None,
+    }
+    (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [record]
+
+
+def test_default_seal_predicate_does_not_match_legacy_op_only_shape(tmp_path):
+    """A record that only has the legacy ``op`` field (no ``kind``) must NOT
+    match the default predicate — that field name does not exist on the real
+    ledger, and matching it would be the same bug this default replaces."""
+    seen = []
+    daemon = _daemon_with_ledger(tmp_path, on_seal=seen.append)
+    (tmp_path / "ledger.jsonl").write_text(
+        json.dumps({"op": "seal", "nestor_pair_id": "p1"}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 0
+    assert seen == []
+
+
+def test_caller_supplied_seal_predicate_overrides_the_default(tmp_path):
+    """A consumer that wants domain narrowing (e.g. only decision-lane seals)
+    supplies its own predicate; SeatDaemon must honor it instead of the
+    ``kind == "seal"`` default."""
+    seen = []
+    daemon = _daemon_with_ledger(
+        tmp_path,
+        on_seal=seen.append,
+        seal_predicate=lambda record: record.get("kind") == "seal"
+        and record.get("source_lang") == "decision",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"kind": "seal", "source_lang": "other", "id": 1}) + "\n"
+        + json.dumps({"kind": "seal", "source_lang": "decision", "id": 2}) + "\n"
+    )
+
+    dispatched = daemon.poll_seal_ledger()
+
+    assert dispatched == 1
+    assert seen == [{"kind": "seal", "source_lang": "decision", "id": 2}]
+
+
+def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(tmp_path, monkeypatch):
+    """One watcher raising must not kill the heartbeat: force the seal poll
+    to explode and confirm run_forever still emits its heartbeat and stops
+    cleanly rather than propagating the exception."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = _daemon_with_ledger(tmp_path, mcp_call=mcp_call)
+    daemon.heartbeat_interval = 0  # heartbeat due on every tick
+
+    def _boom():
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(daemon.seal_watcher, "poll", _boom)
+    daemon.request_stop()
+
+    statuses = []
+    daemon.run_forever(on_status=statuses.append)
+
+    assert "grove_heartbeat" in calls
+    assert statuses[-1] == "stopped"
+    assert any("seal watch error" in s for s in statuses)
+
+
+def test_raising_on_seal_does_not_kill_the_heartbeat_and_retries_only_the_bad_record(
+    tmp_path,
+):
+    """A permanently-failing consumer must not take the heartbeat down with
+    it, and each retry must surface the failure rather than silently wedging
+    or re-firing whatever ran before it in run_forever's own loop."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    invocations = []
+
+    def on_seal(record):
+        invocations.append(record)
+        raise ValueError("permanently broken consumer")
+
+    daemon = _daemon_with_ledger(tmp_path, on_seal=on_seal, mcp_call=mcp_call)
+    daemon.heartbeat_interval = 0  # heartbeat due on every tick
+    (tmp_path / "ledger.jsonl").write_text(json.dumps({"kind": "seal", "id": 1}) + "\n")
+    daemon.request_stop()
+
+    statuses = []
+    daemon.run_forever(on_status=statuses.append)
+
+    assert "grove_heartbeat" in calls
+    assert statuses[-1] == "stopped"
+    assert invocations == [{"kind": "seal", "id": 1}]
+    assert any("seal watch error" in s for s in statuses)
+
+    # A second, independent poll call still fails on the same record — the
+    # failure surfaces every time, not just once, and it's the same record
+    # retried, not something new.
+    assert daemon.poll_seal_ledger(statuses.append) == 0
+    assert invocations == [{"kind": "seal", "id": 1}, {"kind": "seal", "id": 1}]
+    assert any("seal watch error" in s for s in statuses[-2:])
+
+
+def test_seal_ledger_is_polled_on_poll_interval_not_heartbeat_interval(tmp_path):
+    """The seal watch must not wait for the (much slower) heartbeat clock —
+    across several loop ticks with a long heartbeat interval, the ledger
+    should still be polled every tick."""
+    ledger = tmp_path / "ledger.jsonl"
+    offset = tmp_path / "offset"
+
+    def mcp_call(tool, inputs):
+        return "{}"
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        poll_interval=0.01,
+        heartbeat_interval=3600,  # would never come due again in this test
+        seal_ledger_path=ledger,
+        seal_offset_path=offset,
+    )
+
+    poll_calls = []
+    real_poll = daemon.poll_seal_ledger
+
+    def counting_poll(on_status=None):
+        poll_calls.append(1)
+        return real_poll(on_status)
+
+    daemon.poll_seal_ledger = counting_poll
+
+    # Stop the loop after a handful of ticks by flipping the stop event from
+    # inside run_once, which run_forever calls once per tick.
+    ticks = {"n": 0}
+    real_run_once = daemon.listener.run_once
+
+    def run_once_then_stop_after(n=4):
+        ticks["n"] += 1
+        if ticks["n"] >= n:
+            daemon.request_stop()
+        return real_run_once()
+
+    daemon.listener.run_once = run_once_then_stop_after
+
+    daemon.run_forever()
+
+    # One poll before the loop starts, plus one per tick — none of them
+    # gated on the heartbeat, which is due only once (interval=3600) at the
+    # very first call before the loop.
+    assert len(poll_calls) >= ticks["n"] + 1
+
+
+def test_heartbeat_still_fires_when_the_ledger_is_quiet(tmp_path):
+    """No seals appended at all — the heartbeat must not depend on the
+    ledger having anything to report."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        seal_ledger_path=tmp_path / "ledger.jsonl",  # never created
+        seal_offset_path=tmp_path / "offset",
+    )
+    daemon.request_stop()
+    daemon.run_forever()
+
+    assert calls.count("grove_heartbeat") == 1
+    assert daemon.poll_seal_ledger() == 0
