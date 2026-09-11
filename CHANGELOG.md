@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.7.0](https://github.com/willow-memory/ratatosk/compare/v1.6.0...v1.7.0) (2026-09-11)
+
+
+### Added
+
+* activation daemon with Nestor seal watcher ([#42](https://github.com/willow-memory/ratatosk/issues/42)) ([4066517](https://github.com/willow-memory/ratatosk/commit/4066517dfdccbc2e4ee4ddbd5cc03634df1bb11e))
+* **daemon:** add a generic append-only-JSONL seal watcher to SeatDaemon ([fa41449](https://github.com/willow-memory/ratatosk/commit/fa414490e5eb7764a4344f1a25745493541585a9))
+* **daemon:** add the ratatosk-listen activation daemon ([1a85826](https://github.com/willow-memory/ratatosk/commit/1a8582674c1954d5fef54fc117dfd8489171099c))
+* **listener:** BusListener dispatches WAKE to a seat activation callback, emits Grove heartbeats ([51ddf16](https://github.com/willow-memory/ratatosk/commit/51ddf16203f6f5a883cc4450f18fc9fd85dcad40))
+* **protocol:** add a WAKE intent for fleet activation, gated open ([352686e](https://github.com/willow-memory/ratatosk/commit/352686e7da6e1ea5c0db147770e6a89bc69062f4))
+
+
+### Fixed
+
+* **daemon:** make SeatDaemon's seal predicate correct and overridable ([24d9989](https://github.com/willow-memory/ratatosk/commit/24d9989dd29a697f56b4574cd6b2ee5a871fab55))
+* **daemon:** persist seal watcher offset per record, handle rotation, decouple poll cadence ([da485bb](https://github.com/willow-memory/ratatosk/commit/da485bb1863755f8570164c87e32079eb8288a42))
+
 ## [1.6.0](https://github.com/willow-memory/ratatosk/compare/v1.5.0...v1.6.0) (2026-09-10)
 
 
