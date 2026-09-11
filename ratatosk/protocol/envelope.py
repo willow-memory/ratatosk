@@ -30,6 +30,14 @@ class Intent(str, Enum):
     REPLY = "reply"
     REQUEST_CONFIRM = "request_confirm"
     SHELL = "shell"
+    #: A dispatch wake — the orchestrator telling a dark seat "you have a
+    #: packet". Distinct from RUN_TASK: that intent is gated behind a human
+    #: confirmation by design (capabilities.py), which is correct for an
+    #: arbitrary remote command but wrong for the fleet's own wake signal —
+    #: gating that would mean no seat can ever wake unattended, which is the
+    #: gap this daemon exists to close. WAKE carries no shell/task capability
+    #: itself; it only hands the envelope to the seat's own activation path.
+    WAKE = "wake"
 
 
 class Capability(str, Enum):
@@ -39,6 +47,7 @@ class Capability(str, Enum):
     SUMMARIZE = "summarize"
     REPLY = "reply"
     SHELL = "shell"
+    WAKE = "wake"
 
 
 HIGH_RISK_INTENTS = frozenset({Intent.RUN_TASK, Intent.SHELL})
