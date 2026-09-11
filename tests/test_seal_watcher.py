@@ -144,6 +144,109 @@ def test_io_error_is_surfaced_with_exc_info_and_the_watch_recovers(tmp_path, cap
     assert seen == [{"op": "seal", "id": 1}]
 
 
+def test_crash_mid_batch_resumes_after_last_processed_record(tmp_path):
+    """A per-record offset save means a crash partway through a multi-record
+    batch does not re-fire the records already dispatched before the crash —
+    only what came after the last persisted offset is seen again."""
+    ledger = tmp_path / "ledger.jsonl"
+    offset = tmp_path / "offset"
+    _append(
+        ledger,
+        {"op": "seal", "id": 1},
+        {"op": "seal", "id": 2},
+        {"op": "seal", "id": 3},
+    )
+
+    seen = []
+
+    def crash_on_third(record):
+        if record["id"] == 3:
+            # Stand in for the process dying mid-batch — an unhandled
+            # exception is indistinguishable from a hard crash from the
+            # offset store's point of view.
+            raise RuntimeError("simulated crash")
+        seen.append(record)
+
+    watcher = JsonlTailWatcher(ledger, _is_seal, crash_on_third, offset)
+    with pytest.raises(RuntimeError):
+        watcher.poll()
+
+    assert seen == [{"op": "seal", "id": 1}, {"op": "seal", "id": 2}]
+
+    # Restart: fresh watcher instance, same offset file, a callback that no
+    # longer crashes. Only the record that never completed should re-fire.
+    seen_after_restart = []
+    dispatched = JsonlTailWatcher(
+        ledger, _is_seal, seen_after_restart.append, offset
+    ).poll()
+
+    assert dispatched == 1
+    assert seen_after_restart == [{"op": "seal", "id": 3}]
+
+
+def test_raising_consumer_does_not_refire_prior_records_and_retries_only_failing_one(
+    tmp_path, caplog
+):
+    """A permanently-failing record must not wedge the batch or re-fire
+    records already committed before it — it should surface on every poll
+    (via the re-raised exception) and be the only thing retried."""
+    ledger = tmp_path / "ledger.jsonl"
+    offset = tmp_path / "offset"
+    _append(
+        ledger,
+        {"op": "seal", "id": 1},
+        {"op": "seal", "id": 2},
+    )
+
+    seen = []
+
+    def always_fails_on_two(record):
+        if record["id"] == 2:
+            raise ValueError("permanently broken consumer")
+        seen.append(record)
+
+    watcher = JsonlTailWatcher(ledger, _is_seal, always_fails_on_two, offset)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError):
+            watcher.poll()
+    assert seen == [{"op": "seal", "id": 1}]
+    assert any(rec.exc_info for rec in caplog.records)
+
+    # Retrying does not re-fire record 1, and fails again on record 2 —
+    # every single poll, not just the first, so it cannot silently wedge.
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError):
+            watcher.poll()
+    assert seen == [{"op": "seal", "id": 1}]
+    assert any(rec.exc_info for rec in caplog.records)
+
+
+def test_rotation_or_truncation_resets_offset_and_new_record_is_seen(tmp_path):
+    """If the ledger shrinks below the persisted offset (truncated in place,
+    or rotated to a fresh empty file at the same path) the watcher must not
+    seek past EOF and silently miss everything written after — it should
+    detect the shrink and re-read from 0."""
+    ledger = tmp_path / "ledger.jsonl"
+    offset = tmp_path / "offset"
+    _append(ledger, {"op": "seal", "id": 1}, {"op": "seal", "id": 2})
+
+    seen = []
+    watcher = JsonlTailWatcher(ledger, _is_seal, seen.append, offset)
+    assert watcher.poll() == 2
+
+    # Simulate rotation: truncate to empty, then write a fresh, shorter
+    # ledger whose size is smaller than the previously persisted offset.
+    ledger.write_text("")
+    _append(ledger, {"op": "seal", "id": 99})
+
+    dispatched = watcher.poll()
+
+    assert dispatched == 1
+    assert seen[-1] == {"op": "seal", "id": 99}
+
+
 def test_op_predicate_is_configurable_not_hardcoded_to_nestor_schema(tmp_path):
     """Ratatosk core stays generic — a caller watching for a totally
     different op on a totally different ledger shape works identically."""

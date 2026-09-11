@@ -212,6 +212,95 @@ def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(tmp_path, 
     assert any("seal watch error" in s for s in statuses)
 
 
+def test_raising_on_seal_does_not_kill_the_heartbeat_and_retries_only_the_bad_record(
+    tmp_path,
+):
+    """A permanently-failing consumer must not take the heartbeat down with
+    it, and each retry must surface the failure rather than silently wedging
+    or re-firing whatever ran before it in run_forever's own loop."""
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        return "{}"
+
+    invocations = []
+
+    def on_seal(record):
+        invocations.append(record)
+        raise ValueError("permanently broken consumer")
+
+    daemon = _daemon_with_ledger(tmp_path, on_seal=on_seal, mcp_call=mcp_call)
+    daemon.heartbeat_interval = 0  # heartbeat due on every tick
+    (tmp_path / "ledger.jsonl").write_text(json.dumps({"op": "seal", "id": 1}) + "\n")
+    daemon.request_stop()
+
+    statuses = []
+    daemon.run_forever(on_status=statuses.append)
+
+    assert "grove_heartbeat" in calls
+    assert statuses[-1] == "stopped"
+    assert invocations == [{"op": "seal", "id": 1}]
+    assert any("seal watch error" in s for s in statuses)
+
+    # A second, independent poll call still fails on the same record — the
+    # failure surfaces every time, not just once, and it's the same record
+    # retried, not something new.
+    assert daemon.poll_seal_ledger(statuses.append) == 0
+    assert invocations == [{"op": "seal", "id": 1}, {"op": "seal", "id": 1}]
+    assert any("seal watch error" in s for s in statuses[-2:])
+
+
+def test_seal_ledger_is_polled_on_poll_interval_not_heartbeat_interval(tmp_path):
+    """The seal watch must not wait for the (much slower) heartbeat clock —
+    across several loop ticks with a long heartbeat interval, the ledger
+    should still be polled every tick."""
+    ledger = tmp_path / "ledger.jsonl"
+    offset = tmp_path / "offset"
+
+    def mcp_call(tool, inputs):
+        return "{}"
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=mcp_call,
+        poll_interval=0.01,
+        heartbeat_interval=3600,  # would never come due again in this test
+        seal_ledger_path=ledger,
+        seal_offset_path=offset,
+    )
+
+    poll_calls = []
+    real_poll = daemon.poll_seal_ledger
+
+    def counting_poll(on_status=None):
+        poll_calls.append(1)
+        return real_poll(on_status)
+
+    daemon.poll_seal_ledger = counting_poll
+
+    # Stop the loop after a handful of ticks by flipping the stop event from
+    # inside run_once, which run_forever calls once per tick.
+    ticks = {"n": 0}
+    real_run_once = daemon.listener.run_once
+
+    def run_once_then_stop_after(n=4):
+        ticks["n"] += 1
+        if ticks["n"] >= n:
+            daemon.request_stop()
+        return real_run_once()
+
+    daemon.listener.run_once = run_once_then_stop_after
+
+    daemon.run_forever()
+
+    # One poll before the loop starts, plus one per tick — none of them
+    # gated on the heartbeat, which is due only once (interval=3600) at the
+    # very first call before the loop.
+    assert len(poll_calls) >= ticks["n"] + 1
+
+
 def test_heartbeat_still_fires_when_the_ledger_is_quiet(tmp_path):
     """No seals appended at all — the heartbeat must not depend on the
     ledger having anything to report."""
