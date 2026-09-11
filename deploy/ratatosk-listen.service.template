@@ -1,0 +1,50 @@
+# systemd --user unit template for the ratatosk fleet activation daemon.
+#
+# Not used directly — fill in the @PLACEHOLDERS@ before installing, e.g.:
+#
+#   sed -e "s#@WORKDIR@#$(pwd)#g" \
+#       -e "s#@VENV_DIR@#$(pwd)/.venv#g" \
+#       -e "s#@CHANNEL@#willow-fleet#g" \
+#       -e "s#@AGENT_NAME@#ratatosk#g" \
+#       deploy/ratatosk-listen.service.template \
+#       > ~/.config/systemd/user/ratatosk-listen.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ratatosk-listen
+#
+# No absolute path is baked into this template itself — @WORKDIR@ and
+# @VENV_DIR@ resolve at install time from the operator's actual checkout and
+# venv, mirroring deploy/grove-serve.service.template in willows-grove, so a
+# later move of the repo or a venv rebuild does not strand the unit.
+#
+# @CHANNEL@ is RATATOSK_GROVE_CHANNEL — there is no safe default (see PR 22 /
+# commit 70a994d: the listener refuses to start rather than guess "general").
+# An empty or missing value here means the daemon starts, refuses, exits 1,
+# and systemd's Restart= policy below spins it forever on a config error
+# rather than a transient one — fill this in before enabling the unit.
+#
+# @AGENT_NAME@ is WILLOW_AGENT_NAME, the node identity BusListener answers to
+# and heartbeats as. Defaults to "ratatosk" if left as the literal placeholder
+# only by accident of BusListener's own fallback — set it explicitly per seat.
+[Unit]
+Description=Ratatosk fleet activation daemon (Grove listener + heartbeat) — @CHANNEL@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WORKDIR@
+Environment=RATATOSK_GROVE_CHANNEL=@CHANNEL@
+Environment=WILLOW_AGENT_NAME=@AGENT_NAME@
+ExecStart=@VENV_DIR@/bin/ratatosk-listen
+# SIGTERM reaches SeatDaemon.request_stop via the signal handler installed in
+# ratatosk.daemon.main; the loop exits at the next poll boundary and tears
+# down the MCP stdio server in its finally — no SIGKILL escalation needed for
+# an ordinary stop/restart.
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ratatosk-listen
+
+[Install]
+WantedBy=default.target
