@@ -127,6 +127,16 @@ def _names_a_non_suppressed_credential(value: object) -> bool:
     return any(c in str(value) for c in NON_SUPPRESSED_CREDENTIALS)
 
 
+def test_the_credential_scan_catches_a_planted_github_token():
+    """Planted: the exact value jeles ran on. `${{ secrets.GITHUB_TOKEN }}`
+    names no non-suppressed credential, so the scan must say so; the
+    willow-ci App token must clear it. Until this plant the scan below had
+    never been shown to fire (G2-meta-scans)."""
+    assert not _names_a_non_suppressed_credential("${{ secrets.GITHUB_TOKEN }}")
+    assert _names_a_non_suppressed_credential("${{ steps.app-token.outputs.token }}")
+    assert _names_a_non_suppressed_credential("${{ secrets.RELEASE_PLEASE_TOKEN }}")
+
+
 def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     used: set[str] = set()
     values: list[str] = []
