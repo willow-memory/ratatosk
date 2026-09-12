@@ -1,0 +1,4 @@
+# One line ending everywhere. tests/fleet_conventions.json is pinned by the
+# sha256 of its bytes, and a Windows checkout under autocrlf would rewrite
+# it to CRLF and fail the pin for a change nobody made.
+* text=auto eol=lf

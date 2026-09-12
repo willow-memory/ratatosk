@@ -1,6 +1,8 @@
 """One error shape, an honest schema, signalled truncation."""
 
 import json
+import sys
+from pathlib import Path
 
 from ratatosk.tools import BASH_TOOL, dispatch, problem
 
@@ -107,10 +109,15 @@ def test_shell_in_disguise_is_refused():
 
 
 def test_a_plain_program_still_runs():
+    """`echo` is a shell builtin on Windows, not a program, so the plain
+    program here is the interpreter running the tests. Its path is passed in
+    POSIX form: the tool splits into POSIX words, and a backslash in a
+    Windows path would be read as an escape."""
+    program = Path(sys.executable).as_posix()
     result = dispatch(
-        "Bash", {"command": "echo ratatosk-ok"}, set(), None, trusted=True
+        "Bash", {"command": f"{program} --version"}, set(), None, trusted=True
     )
-    assert "ratatosk-ok" in result
+    assert "Python" in result, result
 
 
 def test_unbalanced_quote_explains_itself():
@@ -131,11 +138,19 @@ def test_timeout_kills_the_whole_process_group(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tools, "_BASH_TIMEOUT", 2)
     marker = tmp_path / "grandchild-alive.txt"
-    script = tmp_path / "spawner.sh"
-    script.write_text(f"#!/bin/sh\n( sleep 6; echo alive > {marker} ) &\nsleep 6\n")
-    script.chmod(0o755)
+    # A Python spawner rather than a shell script, so the same test runs on
+    # Windows: the grandchild is a second interpreter that sleeps past the
+    # timeout and then writes the marker.
+    spawner = tmp_path / "spawner.py"
+    spawner.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', "
+        f"\"import time; time.sleep(6); open(r'{marker}', 'w').write('alive')\"])\n"
+        "time.sleep(6)\n"
+    )
+    command = f"{Path(sys.executable).as_posix()} {spawner.as_posix()}"
 
-    result = dispatch("Bash", {"command": str(script)}, set(), None, trusted=True)
+    result = dispatch("Bash", {"command": command}, set(), None, trusted=True)
     assert "timed out" in result
     assert "killed" in result
 

@@ -1,7 +1,10 @@
 """A hook runs as what it is, and PreTool can block."""
 
 import json
+import os
 import stat
+
+import pytest
 
 from ratatosk.hooks import BLOCK_EXIT_CODE, HookRuntime, blocking, merged_input
 from ratatosk.tools import dispatch
@@ -118,6 +121,11 @@ def test_a_timeout_is_a_crash(tmp_path):
     assert "timed out" in results[0].output
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the world-writable check reads POSIX mode bits and abstains elsewhere; "
+    "Windows ACLs are not modelled (ratatosk.hooks._is_world_writable)",
+)
 def test_a_world_writable_config_is_refused(tmp_path):
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho hi\n")
     runtime = _runtime(tmp_path, "PreTool", {"script": str(script)})
@@ -127,6 +135,11 @@ def test_a_world_writable_config_is_refused(tmp_path):
     assert "world-writable" in results[0].output
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the world-writable check reads POSIX mode bits and abstains elsewhere; "
+    "Windows ACLs are not modelled (ratatosk.hooks._is_world_writable)",
+)
 def test_a_world_writable_script_is_refused(tmp_path):
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho hi\n")
     script.chmod(script.stat().st_mode | stat.S_IWOTH)
