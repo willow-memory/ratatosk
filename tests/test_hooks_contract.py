@@ -1,7 +1,11 @@
 """A hook runs as what it is, and PreTool can block."""
+
 import json
 import os
 import stat
+import sys
+
+import pytest
 
 from ratatosk.hooks import BLOCK_EXIT_CODE, HookRuntime, blocking, merged_input
 from ratatosk.tools import dispatch
@@ -24,14 +28,18 @@ def _sh(tmp_path, name, body, executable=True):
 def test_a_shell_hook_with_a_shebang_runs(tmp_path):
     """The defect: every hook was launched as [sys.executable, script]."""
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho shell-hook-ran\n")
-    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event("PostTool")
+    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event(
+        "PostTool"
+    )
     assert results[0].ok, results[0].output
     assert "shell-hook-ran" in results[0].output
 
 
 def test_a_non_executable_sh_still_runs_via_extension(tmp_path):
     script = _sh(tmp_path, "hook.sh", "echo via-extension\n", executable=False)
-    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event("PostTool")
+    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event(
+        "PostTool"
+    )
     assert results[0].ok
     assert "via-extension" in results[0].output
 
@@ -40,24 +48,33 @@ def test_an_unrunnable_hook_refuses_loudly(tmp_path):
     """Silently failing is the behaviour being removed."""
     script = tmp_path / "hook.weird"
     script.write_text("not a program")
-    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event("PostTool")
+    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event(
+        "PostTool"
+    )
     assert not results[0].ok
     assert "no known interpreter" in results[0].output
 
 
 def test_an_explicit_interpreter_wins(tmp_path):
     script = tmp_path / "hook.weird"
-    script.write_text("echo explicit-interpreter\n")
+    script.write_text("print('explicit-interpreter')\n")
+    # The interpreter named here must exist on every platform the suite runs
+    # on, so it is this test's own Python; the property under test is that an
+    # explicit interpreter beats the extension, not which interpreter it is.
     results = _runtime(
-        tmp_path, "PostTool", {"script": str(script), "interpreter": "/bin/sh"}
+        tmp_path, "PostTool", {"script": str(script), "interpreter": sys.executable}
     ).run_event("PostTool")
     assert results[0].ok
     assert "explicit-interpreter" in results[0].output
 
 
 def test_exit_2_blocks_and_the_reason_reaches_the_caller(tmp_path):
-    script = _sh(tmp_path, "block.sh", f"#!/bin/sh\necho 'no thanks'\nexit {BLOCK_EXIT_CODE}\n")
-    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event("PreTool")
+    script = _sh(
+        tmp_path, "block.sh", f"#!/bin/sh\necho 'no thanks'\nexit {BLOCK_EXIT_CODE}\n"
+    )
+    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event(
+        "PreTool"
+    )
     assert results[0].blocked
     assert results[0].decision == "block"
     assert "no thanks" in results[0].reason
@@ -67,7 +84,9 @@ def test_exit_2_blocks_and_the_reason_reaches_the_caller(tmp_path):
 def test_exit_1_is_a_crash_not_a_block(tmp_path):
     """Conflating them means a hook with a typo silently denies everything."""
     script = _sh(tmp_path, "broken.sh", "#!/bin/sh\nexit 1\n")
-    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event("PreTool")
+    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event(
+        "PreTool"
+    )
     assert not results[0].ok
     assert results[0].decision == "error"
 
@@ -83,13 +102,17 @@ def test_on_failure_allow_lets_a_crashing_pretool_through(tmp_path):
 
 def test_a_crashing_pretool_denies_by_default(tmp_path):
     script = _sh(tmp_path, "broken.sh", "#!/bin/sh\nexit 1\n")
-    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event("PreTool")
+    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event(
+        "PreTool"
+    )
     assert results[0].blocked
 
 
 def test_a_crashing_posttool_does_not_deny(tmp_path):
     script = _sh(tmp_path, "broken.sh", "#!/bin/sh\nexit 1\n")
-    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event("PostTool")
+    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event(
+        "PostTool"
+    )
     assert not results[0].blocked
 
 
@@ -102,6 +125,11 @@ def test_a_timeout_is_a_crash(tmp_path):
     assert "timed out" in results[0].output
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the world-writable check reads POSIX mode bits and abstains elsewhere; "
+    "Windows ACLs are not modelled (ratatosk.hooks._is_world_writable)",
+)
 def test_a_world_writable_config_is_refused(tmp_path):
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho hi\n")
     runtime = _runtime(tmp_path, "PreTool", {"script": str(script)})
@@ -111,10 +139,17 @@ def test_a_world_writable_config_is_refused(tmp_path):
     assert "world-writable" in results[0].output
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the world-writable check reads POSIX mode bits and abstains elsewhere; "
+    "Windows ACLs are not modelled (ratatosk.hooks._is_world_writable)",
+)
 def test_a_world_writable_script_is_refused(tmp_path):
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho hi\n")
     script.chmod(script.stat().st_mode | stat.S_IWOTH)
-    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event("PreTool")
+    results = _runtime(tmp_path, "PreTool", {"script": str(script)}).run_event(
+        "PreTool"
+    )
     assert not results[0].ok
     assert "world-writable" in results[0].output
 
@@ -123,7 +158,9 @@ def test_group_writable_is_fine(tmp_path):
     """umask 002 is the default here; refusing it would refuse every hook."""
     script = _sh(tmp_path, "hook.sh", "#!/bin/sh\necho hi\n")
     script.chmod(script.stat().st_mode | stat.S_IWGRP)
-    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event("PostTool")
+    results = _runtime(tmp_path, "PostTool", {"script": str(script)}).run_event(
+        "PostTool"
+    )
     assert results[0].ok
 
 
@@ -151,7 +188,7 @@ def test_posttool_fires_when_the_tool_fails(tmp_path):
     script = _sh(
         tmp_path,
         "post.sh",
-        f"#!/bin/sh\necho fired > {marker}\n",
+        f"#!/bin/sh\necho fired > {marker.as_posix()}\n",
     )
     runtime = _runtime(tmp_path, "PostTool", {"script": str(script)})
     result = dispatch(
@@ -169,7 +206,9 @@ def test_posttool_fires_when_the_tool_fails(tmp_path):
 def test_updated_input_only_touches_declared_keys(tmp_path):
     from ratatosk.hooks import HookResult
 
-    results = [HookResult(script="s", ok=True, output="", updated_input={"a": 2, "sneaky": 9})]
+    results = [
+        HookResult(script="s", ok=True, output="", updated_input={"a": 2, "sneaky": 9})
+    ]
     assert merged_input(results, {"a": 1}) == {"a": 2}
 
 

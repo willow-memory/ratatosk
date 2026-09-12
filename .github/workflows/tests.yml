@@ -1,5 +1,26 @@
 name: Tests
 
+# The fleet CI floor (fleet plan decision 5, C4-tests-yml). Four legs and a
+# gate:
+#
+#   test-matrix   Linux, one leg per Python pyproject's classifiers name. The
+#                 list here is derived from those classifiers, and
+#                 tests/test_release_wiring.py fails when the two disagree.
+#   test-windows  the floor and ceiling Pythons only — enough to catch the
+#                 separator, line-ending and process-model lessons without
+#                 doubling the matrix.
+#   lint          ruff, PINNED to an exact version. An unpinned linter is a
+#                 test whose rules change under you between two pushes of
+#                 the same code.
+#   test          the aggregate the branch ruleset requires. It `needs:`
+#                 every leg, runs `if: always()`, and fails when any needed
+#                 result is not `success` — skipped and cancelled included,
+#                 written out explicitly, because a gate that only looked
+#                 for `failure` would pass a matrix that never ran.
+#
+# CodeQL (python + actions) runs through the repository's default setup, not
+# a workflow here; a workflow-file copy would collide with it.
+
 on:
   push:
     branches: [main]
@@ -15,6 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # = pyproject's `Programming Language :: Python :: 3.X` classifiers.
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
@@ -29,14 +51,62 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the ceiling of the classifier list, nothing between.
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff, pinned
+        run: pip install ruff==0.16.7
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
   test:
-    needs: [test-matrix]
+    needs: [test-matrix, test-windows, lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Assert every matrix leg actually succeeded
-        if: ${{ needs.test-matrix.result != 'success' }}
+      - name: Assert every leg actually succeeded
+        # One line per leg, each comparing against `success` and nothing
+        # else: `skipped` and `cancelled` are failures here, not absences.
         run: |
-          echo "::error::test-matrix did not succeed (result: ${{ needs.test-matrix.result }})"
-          exit 1
-      - run: echo "all matrix legs green"
+          failed=0
+          if [ "${{ needs.test-matrix.result }}" != "success" ]; then
+            echo "::error::test-matrix did not succeed (result: ${{ needs.test-matrix.result }})"; failed=1
+          fi
+          if [ "${{ needs.test-windows.result }}" != "success" ]; then
+            echo "::error::test-windows did not succeed (result: ${{ needs.test-windows.result }})"; failed=1
+          fi
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "::error::lint did not succeed (result: ${{ needs.lint.result }})"; failed=1
+          fi
+          if [ "$failed" != 0 ]; then exit 1; fi
+      - run: echo "every leg green"

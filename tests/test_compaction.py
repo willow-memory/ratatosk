@@ -1,4 +1,5 @@
 """Compaction never orphans a tool_result."""
+
 from ratatosk import session as _session
 from ratatosk.crown import _MAX_TURNS, _compact, _orphans, _safe_start
 
@@ -6,8 +7,18 @@ from ratatosk.crown import _MAX_TURNS, _compact, _orphans, _safe_start
 def _pair(n: int) -> list[dict]:
     """One assistant tool_use turn and the user tool_result that answers it."""
     return [
-        {"role": "assistant", "content": [{"type": "tool_use", "id": f"tu{n}", "name": "Bash", "input": {}}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"tu{n}", "content": "ok"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"tu{n}", "name": "Bash", "input": {}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"tu{n}", "content": "ok"}
+            ],
+        },
     ]
 
 
@@ -36,7 +47,7 @@ def test_orphans_finds_a_result_without_its_use():
 def test_a_blind_tail_slice_would_have_orphaned(monkeypatch):
     """Pins the defect itself: the old boundary lands mid-pair."""
     history = _tool_heavy(_MAX_TURNS + 5)
-    blind = history[-(_MAX_TURNS * 2):]
+    blind = history[-(_MAX_TURNS * 2) :]
     # The old code kept exactly this slice. If it is clean the fixture is wrong
     # and the rest of this file proves nothing.
     assert _orphans(blind), "fixture must reproduce the orphaning boundary"
@@ -119,7 +130,9 @@ def test_the_budget_counts_the_system_prompt_and_tool_schemas():
     assert _compact(history)[1] is None, "no compaction, so no receipt"
 
     fat = RuntimeState(
-        args=argparse.Namespace(local=True, trust=False, mcp=True, listen=False, deposit=False),
+        args=argparse.Namespace(
+            local=True, trust=False, mcp=True, listen=False, deposit=False
+        ),
         model="m",
         writer=_W(),
         history=history,
@@ -139,7 +152,7 @@ def test_the_budget_counts_the_system_prompt_and_tool_schemas():
 
 
 def test_the_receipt_counts_what_was_actually_dropped():
-    """"keeping last 20 turns" was a constant, not a measurement."""
+    """ "keeping last 20 turns" was a constant, not a measurement."""
     history = [{"role": "user", "content": "x" * 50} for _ in range(60)]
     kept, receipt = _compact(history)
 
@@ -156,7 +169,9 @@ def test_the_receipt_names_which_limit_bit():
 
     from ratatosk.crown import _MAX_CHARS
 
-    over_budget = [{"role": "user", "content": "x" * (_MAX_CHARS // 4)} for _ in range(6)]
+    over_budget = [
+        {"role": "user", "content": "x" * (_MAX_CHARS // 4)} for _ in range(6)
+    ]
     assert _compact(over_budget)[1].reason == "budget"
 
 
@@ -176,7 +191,12 @@ def test_a_compaction_leaves_a_mark_in_the_transcript(tmp_path, monkeypatch, cap
     state = _State()
     state.writer = writer
 
-    _record_compaction(state, CompactionReceipt(dropped=7, kept=3, chars_before=100, chars_after=40, reason="budget"))
+    _record_compaction(
+        state,
+        CompactionReceipt(
+            dropped=7, kept=3, chars_before=100, chars_after=40, reason="budget"
+        ),
+    )
 
     entries = writer.read_entries()
     assert len(entries) == 1

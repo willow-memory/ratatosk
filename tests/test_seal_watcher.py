@@ -5,6 +5,7 @@ Kept schema-agnostic in the tests too: the predicate here matches
 ``op == "seal"`` because that is the configured Nestor case, but the class
 under test never assumes that shape.
 """
+
 import json
 import logging
 
@@ -15,8 +16,7 @@ from ratatosk.daemon import JsonlTailWatcher
 
 def _append(path, *records):
     with open(path, "a", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record) + "\n")
+        handle.writelines(json.dumps(record) + "\n" for record in records)
 
 
 def _is_seal(record: dict) -> bool:
@@ -37,7 +37,11 @@ def test_the_seal_predicate_catches_a_planted_seal_and_nothing_else():
 def test_new_seal_fires_the_callback_once(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     offset = tmp_path / "offset"
-    _append(ledger, {"op": "propose", "id": 1}, {"op": "seal", "id": 2, "nestor_pair_id": "p2"})
+    _append(
+        ledger,
+        {"op": "propose", "id": 1},
+        {"op": "seal", "id": 2, "nestor_pair_id": "p2"},
+    )
 
     seen = []
     watcher = JsonlTailWatcher(ledger, _is_seal, seen.append, offset)
@@ -82,7 +86,9 @@ def test_restart_reads_the_persisted_offset_and_does_not_refire(tmp_path):
 
     # A seal appended *after* the restart still fires normally.
     _append(ledger, {"op": "seal", "id": 2})
-    dispatched_after = JsonlTailWatcher(ledger, _is_seal, seen_second.append, offset).poll()
+    dispatched_after = JsonlTailWatcher(
+        ledger, _is_seal, seen_second.append, offset
+    ).poll()
     assert dispatched_after == 1
     assert seen_second == [{"op": "seal", "id": 2}]
 
@@ -90,7 +96,9 @@ def test_restart_reads_the_persisted_offset_and_does_not_refire(tmp_path):
 def test_a_partial_trailing_line_is_not_consumed_until_complete(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     offset = tmp_path / "offset"
-    ledger.write_bytes(b'{"op": "seal", "id": 1}\n{"op": "seal", "id": 2')  # no closing newline
+    ledger.write_bytes(
+        b'{"op": "seal", "id": 1}\n{"op": "seal", "id": 2'
+    )  # no closing newline
 
     seen = []
     watcher = JsonlTailWatcher(ledger, _is_seal, seen.append, offset)
@@ -101,16 +109,20 @@ def test_a_partial_trailing_line_is_not_consumed_until_complete(tmp_path):
 
     # Completing the trailing line makes it available on the next poll.
     with open(ledger, "ab") as handle:
-        handle.write(b'}\n')
+        handle.write(b"}\n")
     dispatched_after = watcher.poll()
     assert dispatched_after == 1
     assert seen[-1] == {"op": "seal", "id": 2}
 
 
-def test_malformed_line_is_logged_and_skipped_next_good_line_still_fires(tmp_path, caplog):
+def test_malformed_line_is_logged_and_skipped_next_good_line_still_fires(
+    tmp_path, caplog
+):
     ledger = tmp_path / "ledger.jsonl"
     offset = tmp_path / "offset"
-    ledger.write_text('{"op": "seal", "id": 1}\nnot json at all\n{"op": "seal", "id": 2}\n')
+    ledger.write_text(
+        '{"op": "seal", "id": 1}\nnot json at all\n{"op": "seal", "id": 2}\n'
+    )
 
     seen = []
     watcher = JsonlTailWatcher(ledger, _is_seal, seen.append, offset)
@@ -128,7 +140,9 @@ def test_malformed_line_is_logged_and_skipped_next_good_line_still_fires(tmp_pat
     assert watcher.poll() == 0
 
 
-def test_io_error_is_surfaced_with_exc_info_and_the_watch_recovers(tmp_path, caplog, monkeypatch):
+def test_io_error_is_surfaced_with_exc_info_and_the_watch_recovers(
+    tmp_path, caplog, monkeypatch
+):
     ledger = tmp_path / "ledger.jsonl"
     offset = tmp_path / "offset"
     _append(ledger, {"op": "seal", "id": 1})
@@ -144,9 +158,8 @@ def test_io_error_is_surfaced_with_exc_info_and_the_watch_recovers(tmp_path, cap
         return real_open(path, mode, *a, **kw)
 
     monkeypatch.setattr("builtins.open", _boom)
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(OSError):
-            watcher.poll()
+    with caplog.at_level(logging.ERROR), pytest.raises(OSError):
+        watcher.poll()
     assert any(rec.exc_info for rec in caplog.records)
 
     monkeypatch.setattr("builtins.open", real_open)
@@ -218,18 +231,16 @@ def test_raising_consumer_does_not_refire_prior_records_and_retries_only_failing
 
     watcher = JsonlTailWatcher(ledger, _is_seal, always_fails_on_two, offset)
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(ValueError):
-            watcher.poll()
+    with caplog.at_level(logging.ERROR), pytest.raises(ValueError):
+        watcher.poll()
     assert seen == [{"op": "seal", "id": 1}]
     assert any(rec.exc_info for rec in caplog.records)
 
     # Retrying does not re-fire record 1, and fails again on record 2 —
     # every single poll, not just the first, so it cannot silently wedge.
     caplog.clear()
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(ValueError):
-            watcher.poll()
+    with caplog.at_level(logging.ERROR), pytest.raises(ValueError):
+        watcher.poll()
     assert seen == [{"op": "seal", "id": 1}]
     assert any(rec.exc_info for rec in caplog.records)
 
@@ -263,7 +274,9 @@ def test_op_predicate_is_configurable_not_hardcoded_to_nestor_schema(tmp_path):
     different op on a totally different ledger shape works identically."""
     ledger = tmp_path / "other.jsonl"
     offset = tmp_path / "offset"
-    _append(ledger, {"kind": "widget_built", "n": 5}, {"kind": "widget_scrapped", "n": 6})
+    _append(
+        ledger, {"kind": "widget_built", "n": 5}, {"kind": "widget_scrapped", "n": 6}
+    )
 
     seen = []
     watcher = JsonlTailWatcher(

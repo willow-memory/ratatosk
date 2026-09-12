@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from ratatosk.hooks import HookRuntime
 
@@ -16,7 +15,9 @@ def test_hook_runtime_runs_script(tmp_path, monkeypatch):
     cfg = tmp_path / "ratatosk" / "hooks.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        json.dumps({"events": {"SessionStart": [{"script": str(script), "timeout_s": 3}]}}),
+        json.dumps(
+            {"events": {"SessionStart": [{"script": str(script), "timeout_s": 3}]}}
+        ),
         encoding="utf-8",
     )
     runtime = HookRuntime(config_path=cfg)

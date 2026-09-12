@@ -5,16 +5,17 @@ Field names differ across mcp SDK majors: 1.x exposes ``Tool.inputSchema`` and
 ``input_schema`` and ``is_error`` (the wire aliases are unchanged). Read both,
 so one venv upgrade does not silently sever the fleet.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
 import sys
 import threading
 import time
-from pathlib import Path
 
 MCP_ERROR_PREFIX = "[mcp-error]"
 
@@ -63,9 +64,7 @@ def server_env() -> dict[str, str]:
     if os.environ.get("RATATOSK_MCP_INHERIT_ENV", "").strip() in {"1", "true", "yes"}:
         return dict(os.environ)
     env = dict(get_default_environment())
-    env.update(
-        {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)}
-    )
+    env.update({k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)})
     return env
 
 
@@ -83,12 +82,14 @@ async def _lifecycle(argv: list[str], ready: threading.Event) -> None:
     _mcp_stop_event = stop
     params = StdioServerParameters(command=argv[0], args=argv[1:], env=server_env())
 
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            _mcp_session = session
-            ready.set()
-            await stop.wait()
+    async with (
+        stdio_client(params) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        _mcp_session = session
+        ready.set()
+        await stop.wait()
 
 
 def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
@@ -172,7 +173,9 @@ def _is_error(result) -> bool:
 
 def is_live() -> bool:
     """Whether there is a session and a thread still running it."""
-    return _mcp_session is not None and _mcp_thread is not None and _mcp_thread.is_alive()
+    return (
+        _mcp_session is not None and _mcp_thread is not None and _mcp_thread.is_alive()
+    )
 
 
 def reconnect() -> bool:
@@ -196,10 +199,8 @@ def reconnect() -> bool:
         return False
     _last_reconnect = now
 
-    try:
-        shutdown(timeout=5.0)  # reap whatever is left of the old one
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        shutdown(timeout=5.0)  # reap whatever is left of the old one; best effort
     try:
         start(_mcp_argv)
         return is_live()

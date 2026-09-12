@@ -1,7 +1,7 @@
 """Grove bus listener — MCP-backed task receive."""
+
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
@@ -11,9 +11,13 @@ from typing import Any
 from ratatosk import grove, ollama
 from ratatosk.capabilities import ActionResult, CapabilityGate
 from ratatosk.mcp_client import MCP_ERROR_PREFIX, decode_payloads
-from ratatosk.protocol.envelope import Envelope, Intent, parse_grove_message, validate_envelope
+from ratatosk.protocol.envelope import (
+    Envelope,
+    Intent,
+    parse_grove_message,
+    validate_envelope,
+)
 from ratatosk.traces import log_trace
-
 
 Handler = Callable[[Envelope], str]
 
@@ -72,7 +76,9 @@ def _is_wrapper(value: Any) -> bool:
     observed sending it, but a caller passing a pre-parsed page should still
     work, and an error payload is routed through the same branch.
     """
-    return isinstance(value, dict) and any(k in value for k in ("result", "messages", "error"))
+    return isinstance(value, dict) and any(
+        k in value for k in ("result", "messages", "error")
+    )
 
 
 class BusListener:
@@ -147,7 +153,11 @@ class BusListener:
             log_trace(env.trace_id, "skipped_own_post", {"sender": env.sender})
             return None
 
-        log_trace(env.trace_id, "received", {"sender": msg.get("sender"), "intent": env.intent})
+        log_trace(
+            env.trace_id,
+            "received",
+            {"sender": msg.get("sender"), "intent": env.intent},
+        )
         validation = validate_envelope(env, node=self.node)
         if not validation.ok:
             log_trace(env.trace_id, "rejected", {"errors": validation.errors})
@@ -183,7 +193,11 @@ class BusListener:
                 # keeping a second opinion here.
                 failure = grove._failure_detail(sent)
                 if failure is not None:
-                    log_trace(env.trace_id, "reply_failed", {"channel": reply_channel, "detail": failure})
+                    log_trace(
+                        env.trace_id,
+                        "reply_failed",
+                        {"channel": reply_channel, "detail": failure},
+                    )
                     return f"[{self.node}] reply not delivered to {reply_channel}: {failure}"
             return response
         except Exception as exc:

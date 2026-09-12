@@ -16,6 +16,7 @@ REPL session does not:
 uses it directly). This is the systemd-managed sibling: same BusListener,
 same envelope protocol, no REPL.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -139,10 +140,9 @@ class JsonlTailWatcher:
         try:
             return int(text)
         except ValueError:
-            logger.error(
+            logger.exception(
                 "seal watcher: corrupt offset store %s, restarting from 0",
                 self.offset_store_path,
-                exc_info=True,
             )
             return 0
 
@@ -193,8 +193,9 @@ class JsonlTailWatcher:
         except FileNotFoundError:
             return 0
         except OSError:
-            logger.error(
-                "seal watcher: failed reading ledger %s", self.ledger_path, exc_info=True
+            logger.exception(
+                "seal watcher: failed reading ledger %s",
+                self.ledger_path,
             )
             raise
 
@@ -217,10 +218,9 @@ class JsonlTailWatcher:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
-                logger.error(
+                logger.exception(
                     "seal watcher: malformed line in %s, skipping",
                     self.ledger_path,
-                    exc_info=True,
                 )
                 pos += line_len
                 self._save_offset(pos)
@@ -229,11 +229,10 @@ class JsonlTailWatcher:
                 try:
                     self.callback(record)
                 except Exception:
-                    logger.error(
+                    logger.exception(
                         "seal watcher: on_seal raised for record in %s — "
                         "not advancing past it, will retry next poll",
                         self.ledger_path,
-                        exc_info=True,
                     )
                     raise
                 dispatched += 1
@@ -307,7 +306,8 @@ class SeatDaemon:
             )
             self.seal_watcher = JsonlTailWatcher(
                 ledger_path=ledger_path,
-                op_predicate=seal_predicate or (lambda record: record.get("kind") == "seal"),
+                op_predicate=seal_predicate
+                or (lambda record: record.get("kind") == "seal"),
                 callback=on_seal or default_on_seal,
                 offset_store_path=offset_path,
             )
@@ -354,7 +354,7 @@ class SeatDaemon:
             return 0
         try:
             dispatched = self.seal_watcher.poll()
-        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+        except Exception as exc:
             if on_status:
                 on_status(f"seal watch error: {exc}")
             return 0
@@ -408,7 +408,9 @@ def main(argv: list[str] | None = None) -> None:
         description="Run the Grove activation daemon for this seat (systemd-managed sibling of `ratatosk --mcp --listen`)",
     )
     parser.add_argument("--poll-interval", type=float, default=2.0)
-    parser.add_argument("--heartbeat-interval", type=float, default=DEFAULT_HEARTBEAT_INTERVAL)
+    parser.add_argument(
+        "--heartbeat-interval", type=float, default=DEFAULT_HEARTBEAT_INTERVAL
+    )
     args = parser.parse_args(argv)
 
     from ratatosk import mcp_client

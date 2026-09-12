@@ -7,6 +7,7 @@ job and is covered in test_listener.py; these tests cover only what SeatDaemon
 adds: heartbeat scheduling, wake activation wiring, and a stop signal that
 run_forever actually honors.
 """
+
 import json
 
 import pytest
@@ -38,7 +39,12 @@ def test_daemon_emits_a_heartbeat():
 
     daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call)
     assert daemon.emit_heartbeat() is True
-    assert calls == [("grove_heartbeat", {"app_id": "ratatosk", "agent": "ratatosk", "channel": "fleet"})]
+    assert calls == [
+        (
+            "grove_heartbeat",
+            {"app_id": "ratatosk", "agent": "ratatosk", "channel": "fleet"},
+        )
+    ]
 
 
 def test_run_forever_emits_a_heartbeat_on_start_then_stops_cleanly():
@@ -58,7 +64,9 @@ def test_run_forever_emits_a_heartbeat_on_start_then_stops_cleanly():
     daemon.run_forever(on_status=statuses.append)
 
     assert "grove_heartbeat" in calls
-    assert "grove_get_history" not in calls, "stop must be honored before polling begins"
+    assert "grove_get_history" not in calls, (
+        "stop must be honored before polling begins"
+    )
     assert statuses[0] == "listening on fleet as ratatosk"
     assert statuses[-1] == "stopped"
 
@@ -98,9 +106,9 @@ def test_wake_message_activates_the_seat_runtime():
             "id": 1,
             "sender": "willow",
             "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
-                       '"reply_channel":"fleet","mode":"ollama","capabilities":[],'
-                       '"nonce":"wk1","trace_id":"tr-daemon-wake","expires_at":"2099-01-01T00:00:00Z",'
-                       '"requires_confirm":false}',
+            '"reply_channel":"fleet","mode":"ollama","capabilities":[],'
+            '"nonce":"wk1","trace_id":"tr-daemon-wake","expires_at":"2099-01-01T00:00:00Z",'
+            '"requires_confirm":false}',
         }
     ]
 
@@ -109,7 +117,9 @@ def test_wake_message_activates_the_seat_runtime():
             return {"result": list(history)}
         return {}
 
-    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=mcp_call, activate=activate)
+    daemon = SeatDaemon(
+        node="ratatosk", channel="fleet", mcp_call=mcp_call, activate=activate
+    )
     outputs = daemon.listener.run_once()
 
     assert activated == ["tr-daemon-wake"]
@@ -130,6 +140,7 @@ def test_default_heartbeat_interval_is_positive():
 
 def _daemon_with_ledger(tmp_path, on_seal=None, mcp_call=None, **kw):
     if mcp_call is None:
+
         def mcp_call(tool, inputs):
             return "{}"
 
@@ -236,13 +247,16 @@ def test_caller_supplied_seal_predicate_overrides_the_default(tmp_path):
     daemon = _daemon_with_ledger(
         tmp_path,
         on_seal=seen.append,
-        seal_predicate=lambda record: record.get("kind") == "seal"
-        and record.get("source_lang") == "decision",
+        seal_predicate=lambda record: (
+            record.get("kind") == "seal" and record.get("source_lang") == "decision"
+        ),
     )
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"kind": "seal", "source_lang": "other", "id": 1}) + "\n"
-        + json.dumps({"kind": "seal", "source_lang": "decision", "id": 2}) + "\n"
+        json.dumps({"kind": "seal", "source_lang": "other", "id": 1})
+        + "\n"
+        + json.dumps({"kind": "seal", "source_lang": "decision", "id": 2})
+        + "\n"
     )
 
     dispatched = daemon.poll_seal_ledger()
@@ -251,7 +265,9 @@ def test_caller_supplied_seal_predicate_overrides_the_default(tmp_path):
     assert seen == [{"kind": "seal", "source_lang": "decision", "id": 2}]
 
 
-def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(tmp_path, monkeypatch):
+def test_a_watcher_ioerror_does_not_stop_the_heartbeat_in_run_forever(
+    tmp_path, monkeypatch
+):
     """One watcher raising must not kill the heartbeat: force the seal poll
     to explode and confirm run_forever still emits its heartbeat and stops
     cleanly rather than propagating the exception."""

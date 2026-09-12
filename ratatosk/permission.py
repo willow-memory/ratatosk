@@ -45,6 +45,7 @@ precise ID is therefore invisible to the report until the charter gives that
 clause an ID of its own. Both are here so the artifact is discoverable now and
 correct later.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -100,7 +101,9 @@ def _combine(*decisions: Decision) -> Decision:
     return min(decisions, key=lambda d: _ORDER[d.verdict])
 
 
-def _policy_decision(tool_name: str, inputs: dict, policy: PolicyStore | None) -> Decision:
+def _policy_decision(
+    tool_name: str, inputs: dict, policy: PolicyStore | None
+) -> Decision:
     if policy is None:
         return Decision(Verdict.ALLOW, "no policy store", "policy")
     try:
@@ -115,10 +118,14 @@ def _policy_decision(tool_name: str, inputs: dict, policy: PolicyStore | None) -
         return Decision(Verdict.DENY, f"policy denied tool: {tool_name}", "policy")
     if action == "allow":
         return Decision(Verdict.ALLOW, f"policy allows {tool_name}", "policy")
-    return Decision(Verdict.CONFIRM, f"policy requires confirmation for {tool_name}", "policy")
+    return Decision(
+        Verdict.CONFIRM, f"policy requires confirmation for {tool_name}", "policy"
+    )
 
 
-def _gate_decision(tool_name: str, inputs: dict, gate: CapabilityGate | None) -> Decision:
+def _gate_decision(
+    tool_name: str, inputs: dict, gate: CapabilityGate | None
+) -> Decision:
     """The capability gate speaks about protocol intents, not tool names.
 
     Kept as a separate vocabulary rather than merged into PolicyStore: they
@@ -179,8 +186,14 @@ def check(
     if trusted and combined.verdict is Verdict.CONFIRM:
         explicit = policy is not None and _has_explicit_rule(tool_name, inputs, policy)
         if not explicit:
-            return Decision(Verdict.ALLOW, "--trust relaxes the unmatched default", "trust")
-        return Decision(combined.verdict, f"{combined.reason} (explicit rule; --trust does not override)", combined.source)
+            return Decision(
+                Verdict.ALLOW, "--trust relaxes the unmatched default", "trust"
+            )
+        return Decision(
+            combined.verdict,
+            f"{combined.reason} (explicit rule; --trust does not override)",
+            combined.source,
+        )
 
     return combined
 

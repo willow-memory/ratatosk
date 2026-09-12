@@ -1,4 +1,5 @@
 """Tier-0 sync deposit — record comes home on adb/USB."""
+
 from __future__ import annotations
 
 import json

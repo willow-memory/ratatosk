@@ -1,4 +1,5 @@
 """Versioned Ratatosk envelope protocol."""
+
 from __future__ import annotations
 
 import json
@@ -11,14 +12,13 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
-
 PROTOCOL_VERSION = 1
 DEFAULT_TTL_SECONDS = 300
 #: Nonces already accepted, oldest first. An OrderedDict rather than a set
 #: because eviction has to be FIFO: `set.pop()` removes an arbitrary element,
 #: so at the cap a nonce seen seconds ago could be dropped while stale ones
 #: survived — and a dropped nonce is a replay that will be accepted again.
-_SEEN_NONCES: "OrderedDict[str, None]" = OrderedDict()
+_SEEN_NONCES: OrderedDict[str, None] = OrderedDict()
 _MAX_SEEN = 10_000
 
 
@@ -157,7 +157,9 @@ def build_envelope(
         requires_confirm = intent_enum in HIGH_RISK_INTENTS or any(
             c in {x.value for x in HIGH_RISK_CAPABILITIES} for c in caps
         )
-    expires = (_utcnow() + timedelta(seconds=ttl_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expires = (_utcnow() + timedelta(seconds=ttl_seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     return Envelope(
         v=PROTOCOL_VERSION,
         to=to,
@@ -216,7 +218,9 @@ def _envelope_from_dict(data: dict[str, Any], sender: str, raw: str) -> Envelope
 _ADDRESS_RE = re.compile(r"^([a-zA-Z0-9_-]+)\s*:\s*(.+)$", re.DOTALL)
 
 
-def parse_grove_message(msg: dict[str, Any], default_node: str = "ratatosk") -> Envelope | None:
+def parse_grove_message(
+    msg: dict[str, Any], default_node: str = "ratatosk"
+) -> Envelope | None:
     raw = msg.get("content", "")
     sender = msg.get("sender", "unknown")
     if not isinstance(raw, str) or not raw.strip():

@@ -1,4 +1,5 @@
 """Tool definitions and dispatch for the Ratatosk tool loop."""
+
 from __future__ import annotations
 
 import json
@@ -9,10 +10,11 @@ from pathlib import Path
 
 from ratatosk.capabilities import CapabilityGate
 from ratatosk.child_env import child_env
+from ratatosk.hooks import HookRuntime, merged_input
+from ratatosk.hooks import blocking as hooks_blocking
 from ratatosk.permission import NeedsConfirmation, Verdict, check
-from ratatosk.redact import redact
-from ratatosk.hooks import HookRuntime, blocking as hooks_blocking, merged_input
 from ratatosk.policy import PolicyStore
+from ratatosk.redact import redact
 
 BASH_TOOL = {
     "name": "Bash",
@@ -194,7 +196,9 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
                 "Check for an unbalanced quote. This tool splits into POSIX words, not a shell line.",
             )
         if not argv:
-            return problem("The command was empty.", "Pass a program name and its arguments.")
+            return problem(
+                "The command was empty.", "Pass a program name and its arguments."
+            )
         refusal = _reject_shell_in_disguise(argv)
         if refusal:
             return refusal
@@ -203,7 +207,9 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
     if name == "Read":
         path = inputs.get("file_path", "") or inputs.get("path", "")
         if not path:
-            return problem("No file_path was given.", "Pass an absolute path in file_path.")
+            return problem(
+                "No file_path was given.", "Pass an absolute path in file_path."
+            )
         target = Path(path)
         if not target.exists():
             return problem(
@@ -215,7 +221,10 @@ def _run_tool(name: str, inputs: dict, mcp_names: set, mcp_call) -> object:
                 f"{path} is a directory, not a file.",
                 "Use Glob to list its contents.",
             )
-        return _clip(redact(_numbered(target.read_text(encoding="utf-8", errors="replace"))), _MAX_READ)
+        return _clip(
+            redact(_numbered(target.read_text(encoding="utf-8", errors="replace"))),
+            _MAX_READ,
+        )
 
     if name == "Write":
         path = inputs.get("file_path", "")
@@ -290,10 +299,30 @@ def _run_bash(argv: list[str]) -> str:
     return _clip(combined, _MAX_READ)
 
 
-def _kill_group(proc: "subprocess.Popen") -> None:
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill the child and everything it spawned.
+
+    POSIX: the child was started in its own session (`start_new_session`), so
+    its process group is exactly its tree — SIGTERM the group, then SIGKILL
+    whatever ignored it. Windows has no process group to signal and
+    `start_new_session` is a no-op there, so the tree is walked by
+    `taskkill /T`, which ends the child and its descendants together;
+    `proc.kill()` after it covers a `taskkill` that is missing or refused.
+    """
     import os
     import signal
 
+    if os.name != "posix":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
@@ -352,16 +381,18 @@ def dispatch(
                 {"tool_name": name, "tool_input": inputs, "tool_use_id": tool_use_id},
             )
             return problem(
-            f"{name} was blocked by the hook {block.script}: {block.reason}",
-            "Adjust the call, or change that hook in hooks.json.",
-        )
+                f"{name} was blocked by the hook {block.script}: {block.reason}",
+                "Adjust the call, or change that hook in hooks.json.",
+            )
         # A hook may adjust an argument it can already see. Re-validated below,
         # so a mutation cannot buy permission it did not have.
         inputs = merged_input(pre, inputs)
 
     # The single chokepoint. Every verdict is resolved here, before any tool
     # body runs, so a branch below cannot be reached around.
-    decision = check(name, inputs, trusted=trusted, policy=policy_store, gate=_gate_for(gate))
+    decision = check(
+        name, inputs, trusted=trusted, policy=policy_store, gate=_gate_for(gate)
+    )
     if decision.verdict is Verdict.DENY:
         if hook_runtime is not None:
             hook_runtime.run_event(

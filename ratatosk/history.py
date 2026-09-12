@@ -1,4 +1,5 @@
 """Session history index and resume helpers."""
+
 from __future__ import annotations
 
 import json

@@ -1,12 +1,17 @@
-from pathlib import Path
-
-from ratatosk.history import index_session, list_sessions, load_session_history, search_sessions
+from ratatosk.history import (
+    index_session,
+    list_sessions,
+    load_session_history,
+    search_sessions,
+)
 from ratatosk.session import SessionWriter
 
 
 def test_history_index_and_search(tmp_path, monkeypatch):
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj"))
+    monkeypatch.setenv(
+        "RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj")
+    )
 
     writer = SessionWriter(cwd="/tmp/proj")
     writer.write_user("hello ratatosk")

@@ -11,18 +11,23 @@ Apache-2.0 under the same copyright holder and pure stdlib `re`. Ordering
 matters and is preserved: most specific first, so a PEM block is claimed whole
 before a token rule can nibble at its base64 body.
 """
+
 from __future__ import annotations
 
 import re
 
 PLACEHOLDER = "[REDACTED:{kind}]"
 
-_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # PEM private key blocks (RSA/EC/OPENSSH/DSA/PGP or bare) — whole block.
-    ("private_key", re.compile(
-        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----"
-        r".*?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----",
-        re.DOTALL)),
+    (
+        "private_key",
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+            r".*?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----",
+            re.DOTALL,
+        ),
+    ),
     # AWS access key id (long-term AKIA / temporary ASIA).
     ("aws_access_key_id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     # GitHub tokens: ghp_ (PAT), gho_/ghu_/ghs_/ghr_ (app/oauth/server/refresh).
@@ -37,7 +42,12 @@ _PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     # others). Kept after stripe so `sk_live_` is claimed by the stripe rule.
     ("provider_api_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_\-]{20,}\b")),
     # JSON Web Token: three base64url segments, header starts `eyJ`.
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\b")),
+    (
+        "jwt",
+        re.compile(
+            r"\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\b"
+        ),
+    ),
 ]
 
 

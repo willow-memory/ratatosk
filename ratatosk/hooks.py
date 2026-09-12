@@ -16,10 +16,12 @@ block**; any other nonzero is a crash. Conflating them means a hook with a typo
 silently denies every tool call, which is the failure mode that teaches people
 to stop using hooks.
 """
+
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -41,6 +43,25 @@ _EXTENSION_INTERPRETERS: dict[str, list[str]] = {
     ".sh": ["/bin/sh"],
     ".bash": ["/bin/bash"],
 }
+
+
+def _interpreter_for(suffix: str) -> list[str] | None:
+    """The interpreter a hook runs under, by extension.
+
+    `/bin/sh` is the POSIX spelling. Where that path does not exist — Windows,
+    where Git puts `sh` and `bash` on PATH — the same program is found by
+    name, so a `.sh` hook runs as a shell hook there too rather than failing
+    to start. The absolute path wins wherever it exists, so nothing on PATH
+    can shadow the system shell on a POSIX node.
+    """
+    argv = _EXTENSION_INTERPRETERS.get(suffix)
+    if argv is None:
+        return None
+    program = argv[0]
+    if Path(program).exists():
+        return argv
+    found = shutil.which(Path(program).name)
+    return [found, *argv[1:]] if found else argv
 
 
 @dataclass
@@ -67,6 +88,11 @@ def _is_world_writable(path: Path) -> bool:
     security check that fires constantly on correct configuration is one people
     route around. World-writable is the case that is wrong on every system.
     """
+    if os.name != "posix":
+        # POSIX mode bits are a fiction here: Windows reports 0o666 for every
+        # writable file, so S_IWOTH would refuse every hook on every Windows
+        # node. ACLs are not modelled; this check says so by abstaining.
+        return False
     try:
         mode = path.stat().st_mode
     except OSError:
@@ -85,12 +111,14 @@ def _launch_argv(script: Path, spec: dict) -> list[str] | None:
     if interpreter:
         if isinstance(interpreter, str):
             return [interpreter, str(script)]
-        if isinstance(interpreter, list) and all(isinstance(p, str) for p in interpreter):
+        if isinstance(interpreter, list) and all(
+            isinstance(p, str) for p in interpreter
+        ):
             return [*interpreter, str(script)]
         return None
     if os.name == "posix" and os.access(script, os.X_OK):
         return [str(script)]
-    argv = _EXTENSION_INTERPRETERS.get(script.suffix.lower())
+    argv = _interpreter_for(script.suffix.lower())
     if argv:
         return [*argv, str(script)]
     return None
@@ -123,7 +151,9 @@ class HookRuntime:
         events = data.get("events", {})
         return events if isinstance(events, dict) else {}
 
-    def run_event(self, event_name: str, payload: dict | None = None) -> list[HookResult]:
+    def run_event(
+        self, event_name: str, payload: dict | None = None
+    ) -> list[HookResult]:
         on_failure_default = "deny" if event_name in _DEFAULT_DENY_EVENTS else "allow"
 
         if _is_world_writable(self.config_path):
@@ -148,7 +178,9 @@ class HookRuntime:
                 results.append(self._run_one(spec, payload, on_failure_default))
         return results
 
-    def _run_one(self, spec: dict, payload: dict | None, on_failure_default: str) -> HookResult:
+    def _run_one(
+        self, spec: dict, payload: dict | None, on_failure_default: str
+    ) -> HookResult:
         script_str = str(spec.get("script", "")).strip()
         on_failure = str(spec.get("on_failure", on_failure_default)).lower()
         if on_failure not in {"deny", "allow"}:
@@ -210,7 +242,8 @@ class HookRuntime:
                 output=out,
                 blocked=blocked,
                 decision="block" if blocked else "allow",
-                reason=str(parsed.get("reason", "")) or ("blocked by hook" if blocked else ""),
+                reason=str(parsed.get("reason", ""))
+                or ("blocked by hook" if blocked else ""),
                 updated_input=parsed.get("updated_input") or {},
             )
 

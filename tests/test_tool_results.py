@@ -1,5 +1,8 @@
 """One error shape, an honest schema, signalled truncation."""
+
 import json
+import sys
+from pathlib import Path
 
 from ratatosk.tools import BASH_TOOL, dispatch, problem
 
@@ -28,7 +31,9 @@ def test_unknown_tool_says_so_plainly():
 
 
 def test_missing_file_names_the_remedy(tmp_path):
-    result = dispatch("Read", {"file_path": str(tmp_path / "nope.txt")}, set(), None, trusted=True)
+    result = dispatch(
+        "Read", {"file_path": str(tmp_path / "nope.txt")}, set(), None, trusted=True
+    )
     assert "does not exist" in result
     assert "Glob" in result
 
@@ -68,14 +73,18 @@ def test_edit_errors_name_the_remedy(tmp_path):
     missing = dispatch(
         "Edit",
         {"file_path": str(target), "old_string": "zzz", "new_string": "b"},
-        set(), None, trusted=True,
+        set(),
+        None,
+        trusted=True,
     )
     assert "was not found" in missing and "copy the text exactly" in missing
 
     ambiguous = dispatch(
         "Edit",
         {"file_path": str(target), "old_string": "a", "new_string": "b"},
-        set(), None, trusted=True,
+        set(),
+        None,
+        trusted=True,
     )
     assert "matches 3 times" in ambiguous and "surrounding lines" in ambiguous
 
@@ -89,14 +98,26 @@ def test_bash_schema_does_not_claim_a_shell():
 
 
 def test_shell_in_disguise_is_refused():
-    for cmd in ("sh -c 'echo hi'", "bash -c 'echo hi'", "python3 -c 'print(1)'", "perl -e 'print 1'"):
+    for cmd in (
+        "sh -c 'echo hi'",
+        "bash -c 'echo hi'",
+        "python3 -c 'print(1)'",
+        "perl -e 'print 1'",
+    ):
         result = dispatch("Bash", {"command": cmd}, set(), None, trusted=True)
         assert "does not provide one" in result, cmd
 
 
 def test_a_plain_program_still_runs():
-    result = dispatch("Bash", {"command": "echo ratatosk-ok"}, set(), None, trusted=True)
-    assert "ratatosk-ok" in result
+    """`echo` is a shell builtin on Windows, not a program, so the plain
+    program here is the interpreter running the tests. Its path is passed in
+    POSIX form: the tool splits into POSIX words, and a backslash in a
+    Windows path would be read as an escape."""
+    program = Path(sys.executable).as_posix()
+    result = dispatch(
+        "Bash", {"command": f"{program} --version"}, set(), None, trusted=True
+    )
+    assert "Python" in result, result
 
 
 def test_unbalanced_quote_explains_itself():
@@ -113,19 +134,23 @@ def test_empty_command_says_what_to_do():
 def test_timeout_kills_the_whole_process_group(monkeypatch, tmp_path):
     """subprocess.run(timeout=) signals only the direct child; a program that
     spawned its own children left them running after the timeout fired."""
-    import ratatosk.tools as tools
+    from ratatosk import tools
 
     monkeypatch.setattr(tools, "_BASH_TIMEOUT", 2)
     marker = tmp_path / "grandchild-alive.txt"
-    script = tmp_path / "spawner.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        f"( sleep 6; echo alive > {marker} ) &\n"
-        "sleep 6\n"
+    # A Python spawner rather than a shell script, so the same test runs on
+    # Windows: the grandchild is a second interpreter that sleeps past the
+    # timeout and then writes the marker.
+    spawner = tmp_path / "spawner.py"
+    spawner.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', "
+        f"\"import time; time.sleep(6); open('{marker.as_posix()}', 'w').write('alive')\"])\n"
+        "time.sleep(6)\n"
     )
-    script.chmod(0o755)
+    command = f"{Path(sys.executable).as_posix()} {spawner.as_posix()}"
 
-    result = dispatch("Bash", {"command": str(script)}, set(), None, trusted=True)
+    result = dispatch("Bash", {"command": command}, set(), None, trusted=True)
     assert "timed out" in result
     assert "killed" in result
 

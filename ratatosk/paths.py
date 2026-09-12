@@ -1,4 +1,5 @@
 """Path helpers — data routes through WILLOW_HOME when present."""
+
 from __future__ import annotations
 
 import os

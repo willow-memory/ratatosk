@@ -19,6 +19,7 @@ xfail(strict) here between Wave 2 and Wave 3, while the pile was unnumbered
 and the workflow absent; E3-trailers added the workflow and the mark came
 off, as a strict xfail is meant to.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -70,7 +71,9 @@ def test_the_pin_catches_a_planted_one_byte_change():
     hash, which is the point of pinning bytes rather than meaning."""
     original = DOCUMENT.read_bytes()
     altered = original.replace(b'"chore"', b'"chorf"', 1)
-    assert altered != original, "the plant did not land; the document has no chore entry"
+    assert altered != original, (
+        "the plant did not land; the document has no chore entry"
+    )
     json.loads(altered)  # still parses — a semantic check would not notice
     assert _document_hash(altered) != PINNED_SHA256
     assert _document_hash(original) == PINNED_SHA256
@@ -123,7 +126,12 @@ def _names_test_command(contributing_text: str) -> bool:
 
 def test_pr_title_guard_is_present_wherever_automerge_is_armed():
     assert _arms_automerge(REPO_ROOT)
-    assert _missing_when_armed(REPO_ROOT, RULES["required_when_release_please_arms_automerge"]) == []
+    assert (
+        _missing_when_armed(
+            REPO_ROOT, RULES["required_when_release_please_arms_automerge"]
+        )
+        == []
+    )
 
 
 def test_the_configs_hidden_set_equals_the_published_set():
@@ -143,17 +151,21 @@ def test_contributing_names_the_test_command():
 
 def test_trailers_workflow_is_present_because_a_pile_exists():
     assert (REPO_ROOT / PILE).exists()
-    assert _missing_when_pile_exists(REPO_ROOT, RULES["required_when_pile_exists"]) == []
+    assert (
+        _missing_when_pile_exists(REPO_ROOT, RULES["required_when_pile_exists"]) == []
+    )
 
 
 # ── the plants ───────────────────────────────────────────────────────────────
 
 
-def _tree(tmp_path: Path, label: str, *, arms: bool, files: tuple[str, ...] = ()) -> Path:
+def _tree(
+    tmp_path: Path, label: str, *, arms: bool, files: tuple[str, ...] = ()
+) -> Path:
     root = tmp_path / label
     (root / ".github" / "workflows").mkdir(parents=True)
     body = "jobs:\n  release-please:\n    steps:\n      - run: |\n"
-    body += f"          {ARMS_AUTOMERGE} \"$pr\"\n" if arms else "          gh pr list\n"
+    body += f'          {ARMS_AUTOMERGE} "$pr"\n' if arms else "          gh pr list\n"
     (root / RELEASE_PLEASE).write_text(body, encoding="utf-8")
     for f in files:
         (root / f).parent.mkdir(parents=True, exist_ok=True)
@@ -164,23 +176,41 @@ def _tree(tmp_path: Path, label: str, *, arms: bool, files: tuple[str, ...] = ()
 def test_the_armed_tree_check_fires_on_a_planted_tree_missing_the_guard(tmp_path):
     required = RULES["required_when_release_please_arms_automerge"]
     assert _missing_when_armed(_tree(tmp_path, "bare", arms=True), required) == required
-    assert _missing_when_armed(_tree(tmp_path, "guarded", arms=True, files=tuple(required)), required) == []
+    assert (
+        _missing_when_armed(
+            _tree(tmp_path, "guarded", arms=True, files=tuple(required)), required
+        )
+        == []
+    )
     assert _missing_when_armed(_tree(tmp_path, "manual", arms=False), required) == []
 
 
 def test_the_hidden_set_check_catches_a_planted_config_that_unhides_ci():
-    planted = json.dumps({"packages": {".": {"changelog-sections": [
-        {"type": "feat", "section": "Added"},
-        {"type": "docs", "section": "Docs", "hidden": True},
-        {"type": "test", "section": "Tests", "hidden": True},
-        {"type": "ci", "section": "CI"},
-        {"type": "chore", "section": "Chores", "hidden": True},
-    ], "$comment-what-cuts-a-release": "kept"}}})
+    planted = json.dumps(
+        {
+            "packages": {
+                ".": {
+                    "changelog-sections": [
+                        {"type": "feat", "section": "Added"},
+                        {"type": "docs", "section": "Docs", "hidden": True},
+                        {"type": "test", "section": "Tests", "hidden": True},
+                        {"type": "ci", "section": "CI"},
+                        {"type": "chore", "section": "Chores", "hidden": True},
+                    ],
+                    "$comment-what-cuts-a-release": "kept",
+                }
+            }
+        }
+    )
     assert _config_hidden_types(planted) == {"chore", "docs", "test"}
-    assert _config_missing_comments(planted, RULES["required_config_comments"]) == ["$comment-hidden-rule"]
+    assert _config_missing_comments(planted, RULES["required_config_comments"]) == [
+        "$comment-hidden-rule"
+    ]
 
 
-def test_the_pile_check_fires_on_a_planted_tree_with_a_pile_and_no_verify_gate(tmp_path):
+def test_the_pile_check_fires_on_a_planted_tree_with_a_pile_and_no_verify_gate(
+    tmp_path,
+):
     required = RULES["required_when_pile_exists"]
     with_pile = _tree(tmp_path, "pile", arms=False, files=(PILE,))
     assert _missing_when_pile_exists(with_pile, required) == required
