@@ -169,3 +169,4 @@ number on purpose.
 
 49. Adopt `Idea-Id` commit trailers (fleet CONVENTION, decision-2026-09-11): a commit that lands an item here carries `Idea-Id: <corpus>-ideas-<num>`, and `.github/workflows/trailers.yml` runs `reconciler verify` on every PR.
 50. Rewrite `promotion.json` host; Wave 6. It still says `"host": "safe-app-store"`. The owner decided (2026-09-12 04:55Z) that safe-app-store is archived and becomes a parts bin, never an origin. Recorded here; not changed now.
+51. The fleet CI floor (decision 5): a Linux matrix derived from pyproject's Python classifiers, Windows on the floor and ceiling Pythons, a lint job with ruff pinned to an exact version, CodeQL over python and actions, and an aggregate `test` gate that fails on any leg that is not `success` — skipped and cancelled included.
