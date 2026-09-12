@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/willow-memory/ratatosk/compare/v1.7.0...v1.7.1) (2026-09-12)
+
+
+### Fixed
+
+* hooks, the Bash tool and the child environment work on Windows ([af16dec](https://github.com/willow-memory/ratatosk/commit/af16dec0361a7b0184b76f7483b1dad789bc25cb))
+
 ## [1.7.0](https://github.com/willow-memory/ratatosk/compare/v1.6.0...v1.7.0) (2026-09-11)
 
 
