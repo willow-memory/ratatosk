@@ -10,17 +10,14 @@ When `reconciler` happens to be importable, the vendored copy is also held
 equal to the live one.
 
 The consumer half is the reconciler's own consumer test, adapted to this
-tree: the pile is `docs/IDEAS.md`, the test command is the one CI runs and
-CONTRIBUTING.md names. Five checks run against the real tree; four plants
-show each check can fire.
+tree: the pile is `docs/ideas.md` (numbered, in the reconciler's form since
+E3-piles), the test command is the one CI runs and CONTRIBUTING.md names.
+Five checks run against the real tree; four plants show each check can fire.
 
-One rule is expected to fail here today and is marked so, strictly:
-`required_when_pile_exists` names `.github/workflows/trailers.yml`, which
-E3-trailers (fleet plan Wave 3) adds. The rule is not weakened — the xfail
-turns into a failure the moment the workflow lands, at which point the mark
-comes off. Note for that bite: this repo's pile exists but its items are not
-numbered, and the rule's own source says the verify gate is for "a repo with
-a numbered pile"; numbering the pile is part of what E3 owes here.
+`required_when_pile_exists` names `.github/workflows/trailers.yml`. It was
+xfail(strict) here between Wave 2 and Wave 3, while the pile was unnumbered
+and the workflow absent; E3-trailers added the workflow and the mark came
+off, as a strict xfail is meant to.
 """
 from __future__ import annotations
 
@@ -45,7 +42,7 @@ RULES = json.loads(DOCUMENT.read_text(encoding="utf-8"))
 RELEASE_PLEASE = ".github/workflows/release-please.yml"
 RELEASE_CONFIG = "release-please-config.json"
 CONTRIBUTING = "CONTRIBUTING.md"
-PILE = "docs/IDEAS.md"
+PILE = "docs/ideas.md"
 ARMS_AUTOMERGE = "gh pr merge --auto"
 #: Exactly what `.github/workflows/tests.yml` runs and CONTRIBUTING.md quotes.
 TEST_COMMAND = "python -m pytest tests/ -q"
@@ -144,7 +141,6 @@ def test_contributing_names_the_test_command():
     assert _names_test_command((REPO_ROOT / CONTRIBUTING).read_text(encoding="utf-8"))
 
 
-@pytest.mark.xfail(strict=True, reason="E3-trailers (fleet plan Wave 3) adds trailers.yml")
 def test_trailers_workflow_is_present_because_a_pile_exists():
     assert (REPO_ROOT / PILE).exists()
     assert _missing_when_pile_exists(REPO_ROOT, RULES["required_when_pile_exists"]) == []

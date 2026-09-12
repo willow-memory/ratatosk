@@ -370,3 +370,58 @@ def test_the_hidden_set_check_catches_a_planted_config_that_unhides_ci():
     ], "$comment-what-cuts-a-release": "kept"}}})
     assert _hidden_types(planted) == {"chore", "docs", "test"}
     assert _missing_comments(planted) == ["$comment-hidden-rule"]
+
+
+# ── the trailer gate (E3-trailers) ─────────────────────────────────────────
+
+_PILE = "docs/ideas.md"
+_TRAILERS_WF = ".github/workflows/trailers.yml"
+
+
+def _gate_missing_for_pile(root: Path) -> bool:
+    """True when this tree carries a numbered idea pile and no workflow runs
+    `reconciler verify` over it. A pile without the gate means an `Idea-Id`
+    trailer can name an item the doc does not contain and nothing notices —
+    and rule 2a asserts LANDED from that trailer ahead of every other signal."""
+    return (root / _PILE).exists() and not (root / _TRAILERS_WF).exists()
+
+
+def test_the_trailer_gate_is_present_because_a_pile_exists():
+    assert (_REPO / _PILE).exists(), f"{_PILE} is the pile this repo keeps"
+    assert not _gate_missing_for_pile(_REPO), \
+        f"{_TRAILERS_WF} is missing: a dangling Idea-Id trailer would go unverified"
+    assert _workflow_verifies_the_pile((_REPO / _TRAILERS_WF).read_text(encoding="utf-8")), \
+        "the workflow must verify the pile this repo actually keeps"
+
+
+def _workflow_verifies_the_pile(workflow_text: str) -> bool:
+    """Does the workflow run `reconciler verify` over this repo's pile, by
+    the path spelling that resolves under willow-reconciler 0.6.0?"""
+    return f"reconciler verify --repo ./ --doc {_PILE}" in workflow_text
+
+
+def test_the_workflow_check_catches_a_planted_workflow_verifying_another_pile():
+    """Planted: a trailers workflow copied from a sibling that keeps its pile
+    elsewhere, and one using the bare `--repo .` that does not resolve."""
+    assert not _workflow_verifies_the_pile("run: reconciler verify --repo ./ --doc docs/IDEAS.md\n")
+    assert not _workflow_verifies_the_pile("run: reconciler verify --repo . --doc docs/ideas.md\n")
+    assert _workflow_verifies_the_pile("run: reconciler verify --repo ./ --doc docs/ideas.md\n")
+
+
+def _pile_tree(tmp_path: Path, label: str, *, pile: bool, gate: bool) -> Path:
+    root = tmp_path / label
+    (root / ".github" / "workflows").mkdir(parents=True)
+    if pile:
+        (root / "docs").mkdir()
+        (root / _PILE).write_text("1. an idea\n", encoding="utf-8")
+    if gate:
+        (root / _TRAILERS_WF).write_text("name: Trailers\n", encoding="utf-8")
+    return root
+
+
+def test_the_trailer_gate_check_fires_on_a_planted_tree_with_a_pile_and_no_gate(tmp_path):
+    """Planted: a pile and no gate must be reported; a pile with the gate must
+    not; no pile at all must not, since there is nothing to verify."""
+    assert _gate_missing_for_pile(_pile_tree(tmp_path, "ungated", pile=True, gate=False))
+    assert not _gate_missing_for_pile(_pile_tree(tmp_path, "gated", pile=True, gate=True))
+    assert not _gate_missing_for_pile(_pile_tree(tmp_path, "nopile", pile=False, gate=False))
