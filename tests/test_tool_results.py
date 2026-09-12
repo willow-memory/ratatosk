@@ -145,7 +145,7 @@ def test_timeout_kills_the_whole_process_group(monkeypatch, tmp_path):
     spawner.write_text(
         "import subprocess, sys, time\n"
         "subprocess.Popen([sys.executable, '-c', "
-        f"\"import time; time.sleep(6); open(r'{marker}', 'w').write('alive')\"])\n"
+        f"\"import time; time.sleep(6); open('{marker.as_posix()}', 'w').write('alive')\"])\n"
         "time.sleep(6)\n"
     )
     command = f"{Path(sys.executable).as_posix()} {spawner.as_posix()}"

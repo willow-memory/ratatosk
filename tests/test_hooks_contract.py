@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import sys
 
 import pytest
 
@@ -56,9 +57,12 @@ def test_an_unrunnable_hook_refuses_loudly(tmp_path):
 
 def test_an_explicit_interpreter_wins(tmp_path):
     script = tmp_path / "hook.weird"
-    script.write_text("echo explicit-interpreter\n")
+    script.write_text("print('explicit-interpreter')\n")
+    # The interpreter named here must exist on every platform the suite runs
+    # on, so it is this test's own Python; the property under test is that an
+    # explicit interpreter beats the extension, not which interpreter it is.
     results = _runtime(
-        tmp_path, "PostTool", {"script": str(script), "interpreter": "/bin/sh"}
+        tmp_path, "PostTool", {"script": str(script), "interpreter": sys.executable}
     ).run_event("PostTool")
     assert results[0].ok
     assert "explicit-interpreter" in results[0].output
@@ -184,7 +188,7 @@ def test_posttool_fires_when_the_tool_fails(tmp_path):
     script = _sh(
         tmp_path,
         "post.sh",
-        f"#!/bin/sh\necho fired > {marker}\n",
+        f"#!/bin/sh\necho fired > {marker.as_posix()}\n",
     )
     runtime = _runtime(tmp_path, "PostTool", {"script": str(script)})
     result = dispatch(
