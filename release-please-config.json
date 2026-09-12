@@ -20,7 +20,9 @@
         { "type": "test", "section": "Tests", "hidden": true },
         { "type": "ci", "section": "CI", "hidden": true },
         { "type": "chore", "section": "Chores", "hidden": true }
-      ]
+      ],
+      "$comment-what-cuts-a-release": "EVERY type listed above without \"hidden\": true cuts a release on its own — not just feat and fix. jeles learned this the expensive way: v0.4.1 was tagged and published to PyPI for a single ci: commit that changed a workflow file and nothing a user installs. That is survivable while release PRs are merged by hand, because you see what is in them; release-please.yml here arms auto-merge, so an un-hidden type ships to PyPI unattended, and a PyPI version can never be reused.",
+      "$comment-hidden-rule": "The line is: does this commit change what someone gets from `pip install willow-ratatosk`? docs/test/ci do not — tests and workflows are not packaged, and a README edit only moves the PyPI page — so they are hidden and ride along with the next real release. build and deps stay visible because a dependency or packaging change genuinely alters the installed artifact, and hiding them would mean a dependency fix never reaching anyone, silently. refactor and perf stay visible because they change shipped code, and a version number is what you point at when a refactor turns out to have broken something. Hidden also means absent from CHANGELOG.md — release-please has no 'list it but do not release on it' setting, so this is a real trade, taken deliberately."
     }
   }
 }

@@ -130,12 +130,32 @@ def test_the_committed_cassette_carries_no_fleet_prose():
                 assert value["content"].startswith("<scrubbed"), value["content"][:60]
 
 
+def _stored_cassette_carries(path: Path, secret: str) -> bool:
+    """The grep this file runs over a saved cassette: is `secret` anywhere in
+    the bytes on disk? Factored out of the test below so it can be planted —
+    a check written inline in a test body can never be shown to fire
+    (`tests/test_scans_fire.py`)."""
+    return secret in path.read_text(encoding="utf-8")
+
+
 def test_recorder_scrubs_before_it_stores(tmp_path):
     recorder = Recorder(inner=lambda tool, inputs: '{"content": "load-bearing secret"}')
     recorder.call("grove_get_history", {"app_id": "ratatosk"})
     path = recorder.save(tmp_path / "c.json", server="python -m willow_mcp")
 
-    assert "load-bearing secret" not in path.read_text(encoding="utf-8")
+    assert not _stored_cassette_carries(path, "load-bearing secret")
+
+
+def test_the_leak_check_catches_a_planted_unscrubbed_cassette(tmp_path):
+    """Planted: the same recorder with scrubbing switched off. The secret
+    reaches disk, and the check must say so — otherwise the test above
+    proves nothing about the scrub, only about the check's silence."""
+    recorder = Recorder(inner=lambda tool, inputs: '{"content": "load-bearing secret"}',
+                        scrub_keys=frozenset())
+    recorder.call("grove_get_history", {"app_id": "ratatosk"})
+    path = recorder.save(tmp_path / "leaky.json", server="python -m willow_mcp")
+
+    assert _stored_cassette_carries(path, "load-bearing secret")
 
 
 SMOKE_HISTORY = ("grove_get_history", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke", "limit": 1})

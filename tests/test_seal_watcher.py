@@ -23,6 +23,17 @@ def _is_seal(record: dict) -> bool:
     return record.get("op") == "seal"
 
 
+def test_the_seal_predicate_catches_a_planted_seal_and_nothing_else():
+    """Planted: the predicate every test below hands the watcher. A seal is
+    a seal; a propose, an empty record and a record with no `op` are not.
+    Named here so the meta-scan (`tests/test_scans_fire.py`) sees it fire,
+    rather than only being passed along as a callback."""
+    assert _is_seal({"op": "seal", "id": 2})
+    assert not _is_seal({"op": "propose", "id": 1})
+    assert not _is_seal({})
+    assert not _is_seal({"id": 3})
+
+
 def test_new_seal_fires_the_callback_once(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     offset = tmp_path / "offset"
