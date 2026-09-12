@@ -18,6 +18,12 @@ on:
   pull_request:
     branches: [main]
 
+# The job reads the tree and runs `reconciler verify`; it writes nothing, so
+# the token gets exactly that. Every job in .github/workflows/ must carry an
+# effective grant (tests/test_release_wiring.py plants the case that has none).
+permissions:
+  contents: read
+
 jobs:
   verify-trailers:
     runs-on: ubuntu-latest

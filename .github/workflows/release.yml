@@ -13,6 +13,12 @@ on:
     tags:
       - "v*"
 
+# Workflow-level: `build` only checks out and builds. `publish` replaces this
+# with its own job-level `id-token: write` for Trusted Publishing; same-run
+# artifact upload/download use the runtime token, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

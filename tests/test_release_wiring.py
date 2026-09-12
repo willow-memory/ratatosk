@@ -425,3 +425,44 @@ def test_the_trailer_gate_check_fires_on_a_planted_tree_with_a_pile_and_no_gate(
     assert _gate_missing_for_pile(_pile_tree(tmp_path, "ungated", pile=True, gate=False))
     assert not _gate_missing_for_pile(_pile_tree(tmp_path, "gated", pile=True, gate=True))
     assert not _gate_missing_for_pile(_pile_tree(tmp_path, "nopile", pile=False, gate=False))
+
+
+# ── every job carries an effective permissions grant ───────────────────────
+
+_WORKFLOWS_DIR = _REPO / ".github" / "workflows"
+
+
+def _jobs_without_permissions(workflow_text: str) -> list[str]:
+    """The jobs in one workflow that no `permissions:` block covers — neither
+    a workflow-level block nor one on the job itself. Without one, the
+    GITHUB_TOKEN gets the repository default, which is not read-only here;
+    CodeQL raised exactly this on trailers.yml (#45), and the same shape was
+    already in tests.yml and release.yml's build job."""
+    doc = yaml.safe_load(workflow_text) or {}
+    if "permissions" in doc:
+        return []
+    return [name for name, job in (doc.get("jobs") or {}).items()
+            if "permissions" not in (job or {})]
+
+
+def test_every_workflow_job_has_an_effective_permissions_grant():
+    offenders = {
+        path.name: missing
+        for path in sorted(_WORKFLOWS_DIR.glob("*.yml"))
+        if (missing := _jobs_without_permissions(path.read_text(encoding="utf-8")))
+    }
+    assert not offenders, \
+        f"jobs whose GITHUB_TOKEN falls back to the repository default: {offenders}"
+
+
+def test_the_permissions_check_catches_a_planted_workflow_with_no_grant():
+    """Planted: three shapes. No block anywhere must be reported; a
+    workflow-level block must cover every job; a job-level block must cover
+    its own job and leave the others reported."""
+    bare = "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-latest\n"
+    assert _jobs_without_permissions(bare) == ["a", "b"]
+    top = "on: push\npermissions:\n  contents: read\n" + bare[len("on: push\n"):]
+    assert _jobs_without_permissions(top) == []
+    per_job = ("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+               "    permissions:\n      id-token: write\n  b:\n    runs-on: ubuntu-latest\n")
+    assert _jobs_without_permissions(per_job) == ["b"]
