@@ -31,7 +31,9 @@ def _sender(monkeypatch, result):
 
 def test_transport_error_string_is_not_a_receipt(monkeypatch):
     """mcp_client.call returns a str, so a dict-only check called this a success."""
-    _sender(monkeypatch, "[mcp-error] 'CallToolResult' object has no attribute 'isError'")
+    _sender(
+        monkeypatch, "[mcp-error] 'CallToolResult' object has no attribute 'isError'"
+    )
     receipt = grove.send("hello")
     assert not receipt.ok
     assert "isError" in receipt.detail
@@ -81,8 +83,8 @@ def test_a_sender_built_before_the_channel_is_set_still_posts_to_it(monkeypatch)
         seen.update(args)
         return {}
 
-    sender = grove.make_mcp_sender(fake_call)          # built with no channel
-    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "late-channel")   # set afterwards
+    sender = grove.make_mcp_sender(fake_call)  # built with no channel
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "late-channel")  # set afterwards
     receipt = sender("hello")
 
     assert receipt.ok, receipt.detail
@@ -94,7 +96,9 @@ def test_an_explicit_channel_still_wins(monkeypatch):
 
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "env-channel")
     seen = {}
-    sender = grove.make_mcp_sender(lambda t, a: seen.update(a) or {}, channel="explicit")
+    sender = grove.make_mcp_sender(
+        lambda t, a: seen.update(a) or {}, channel="explicit"
+    )
     sender("hi")
     assert seen["channel_name"] == "explicit"
 
@@ -150,7 +154,7 @@ def test_connect_reports_a_transport_that_will_not_start(monkeypatch):
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
     grove.set_grove_sender(None)
 
-    import ratatosk.mcp_client as mcp_client
+    from ratatosk import mcp_client
 
     def boom(*a, **k):
         raise RuntimeError("no server here")

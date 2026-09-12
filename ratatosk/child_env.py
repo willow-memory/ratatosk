@@ -11,6 +11,7 @@ when something deliberately grants them, never by default. Here that reduces to
 an allowlist — this runtime has no sandbox to negotiate with, so the boundary is
 the environment dict itself.
 """
+
 from __future__ import annotations
 
 import os

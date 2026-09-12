@@ -19,13 +19,15 @@ replaces the *values* that are payload rather than shape. What a cassette
 proves is therefore the shape of a result, which is exactly what the parsers
 read, and never the content of one.
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ratatosk.mcp_client import decode_payloads
 from ratatosk.redact import redact
@@ -36,7 +38,17 @@ SCHEMA = "ratatosk-cassette/v1"
 #: are replaced on record; the key, the type and the rough length survive,
 #: because those are what a parser reads.
 DEFAULT_SCRUB_KEYS: frozenset[str] = frozenset(
-    {"content", "prompt", "text", "detail", "sender", "first_prompt", "peek", "summary", "note"}
+    {
+        "content",
+        "prompt",
+        "text",
+        "detail",
+        "sender",
+        "first_prompt",
+        "peek",
+        "summary",
+        "note",
+    }
 )
 
 
@@ -50,7 +62,10 @@ class UnrecordedCall(LookupError):
 
 def _scrub_value(value: Any, keys: frozenset[str]) -> Any:
     if isinstance(value, dict):
-        return {k: (_placeholder(v) if k in keys else _scrub_value(v, keys)) for k, v in value.items()}
+        return {
+            k: (_placeholder(v) if k in keys else _scrub_value(v, keys))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_scrub_value(v, keys) for v in value]
     if isinstance(value, str):
@@ -133,7 +148,9 @@ def replay(path: str | Path) -> Callable[[str, dict], str]:
     """
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
     if doc.get("schema") != SCHEMA:
-        raise ValueError(f"{path}: not a {SCHEMA} cassette (schema={doc.get('schema')!r})")
+        raise ValueError(
+            f"{path}: not a {SCHEMA} cassette (schema={doc.get('schema')!r})"
+        )
 
     # Inputs were scrubbed on the way in, so the lookup has to be scrubbed on
     # the way out too — otherwise a caller passing the real `content` it is
@@ -144,7 +161,9 @@ def replay(path: str | Path) -> Callable[[str, dict], str]:
 
     answers: dict[str, list[str]] = {}
     for item in doc["interactions"]:
-        answers.setdefault(_key(item["tool"], item["inputs"]), []).append(item["result"])
+        answers.setdefault(_key(item["tool"], item["inputs"]), []).append(
+            item["result"]
+        )
     seen: dict[str, int] = {}
 
     def _call(tool: str, inputs: dict) -> str:

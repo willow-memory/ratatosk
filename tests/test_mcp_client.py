@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from ratatosk import mcp_client
@@ -28,10 +26,14 @@ def test_server_env_can_inherit_everything(monkeypatch):
 
 # ---- reconnect ------------------------------------------------------------
 
+
 def _reset(monkeypatch, **overrides):
     """Isolate the module globals a reconnect touches."""
     for name, value in {
-        "_mcp_argv": None, "_last_reconnect": 0.0, "_mcp_session": None, "_mcp_thread": None,
+        "_mcp_argv": None,
+        "_last_reconnect": 0.0,
+        "_mcp_session": None,
+        "_mcp_thread": None,
     }.items():
         monkeypatch.setattr(mcp_client, name, overrides.get(name, value), raising=False)
 
@@ -48,7 +50,9 @@ def test_reconnect_is_rate_limited(monkeypatch):
     starts = []
     _reset(monkeypatch, _mcp_argv=["python", "-m", "willow_mcp"])
     monkeypatch.setattr(mcp_client, "shutdown", lambda timeout=10.0: True)
-    monkeypatch.setattr(mcp_client, "start", lambda argv=None: starts.append(argv) or ([], set()))
+    monkeypatch.setattr(
+        mcp_client, "start", lambda argv=None: starts.append(argv) or ([], set())
+    )
     monkeypatch.setattr(mcp_client, "is_live", lambda: True)
 
     assert mcp_client.reconnect() is True
@@ -61,7 +65,9 @@ def test_a_tool_error_does_not_trigger_a_reconnect(monkeypatch):
     worth respawning a server for."""
     reconnects = []
     monkeypatch.setattr(mcp_client, "reconnect", lambda: reconnects.append(1) or True)
-    monkeypatch.setattr(mcp_client, "_call_once", lambda name, inputs: "[mcp-error] denied")
+    monkeypatch.setattr(
+        mcp_client, "_call_once", lambda name, inputs: "[mcp-error] denied"
+    )
 
     assert mcp_client.call("kb_promote", {}) == "[mcp-error] denied"
     assert reconnects == []
@@ -84,7 +90,11 @@ def test_a_transport_failure_reconnects_and_retries_once(monkeypatch):
 
 
 def test_a_failed_reconnect_reports_the_original_error(monkeypatch):
-    monkeypatch.setattr(mcp_client, "_call_once", lambda n, i: (_ for _ in ()).throw(RuntimeError("stdio closed")))
+    monkeypatch.setattr(
+        mcp_client,
+        "_call_once",
+        lambda n, i: (_ for _ in ()).throw(RuntimeError("stdio closed")),
+    )
     monkeypatch.setattr(mcp_client, "reconnect", lambda: False)
 
     out = mcp_client.call("whoami", {})

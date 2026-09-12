@@ -1,7 +1,7 @@
 """Grove bus wiring — receipted sends, no silent failure."""
+
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from ratatosk.mcp_client import MCP_ERROR_PREFIX, decode_payloads
 
 _SENDER = os.environ.get("WILLOW_AGENT_NAME", "ratatosk")
 _last_receipt: GroveReceipt | None = None
-_grove_sender: Callable[[str], "GroveReceipt"] | None = None
+_grove_sender: Callable[[str], GroveReceipt] | None = None
 
 
 @dataclass
@@ -49,7 +49,13 @@ def channel_env() -> str:
 def send(content: str) -> GroveReceipt:
     chan = channel_env()
     if not chan:
-        return _record(GroveReceipt(ok=True, detail="grove disabled (RATATOSK_GROVE_CHANNEL unset)", skipped=True))
+        return _record(
+            GroveReceipt(
+                ok=True,
+                detail="grove disabled (RATATOSK_GROVE_CHANNEL unset)",
+                skipped=True,
+            )
+        )
     if _grove_sender is None:
         return _record(
             GroveReceipt(
@@ -145,7 +151,11 @@ def connect(mcp_call=None) -> GroveReceipt:
     chan = channel_env()
     if not chan:
         return _record(
-            GroveReceipt(ok=True, detail="grove disabled (RATATOSK_GROVE_CHANNEL unset)", skipped=True)
+            GroveReceipt(
+                ok=True,
+                detail="grove disabled (RATATOSK_GROVE_CHANNEL unset)",
+                skipped=True,
+            )
         )
     if mcp_call is None:
         try:
@@ -154,7 +164,9 @@ def connect(mcp_call=None) -> GroveReceipt:
             mcp_client.start()
             mcp_call = mcp_client.call
         except Exception as exc:
-            return _record(GroveReceipt(ok=False, detail=f"grove transport unavailable: {exc}"))
+            return _record(
+                GroveReceipt(ok=False, detail=f"grove transport unavailable: {exc}")
+            )
     set_grove_sender(make_mcp_sender(mcp_call))
     return _record(GroveReceipt(ok=True, detail=f"grove bound to {chan}"))
 
@@ -169,7 +181,11 @@ def disable(reason: str) -> None:
     `--mcp` was not passed — says so once here and gets honest skipped receipts
     afterwards.
     """
-    set_grove_sender(lambda _content: GroveReceipt(ok=True, detail=f"grove disabled ({reason})", skipped=True))
+    set_grove_sender(
+        lambda _content: GroveReceipt(
+            ok=True, detail=f"grove disabled ({reason})", skipped=True
+        )
+    )
 
 
 def session_started(session_id: str, model: str) -> GroveReceipt:
@@ -177,4 +193,6 @@ def session_started(session_id: str, model: str) -> GroveReceipt:
 
 
 def session_ended(session_id: str, turns: int, jsonl_path: str) -> GroveReceipt:
-    return send(f"[ratatosk] session ended — {session_id[:8]} turns={turns} jsonl={jsonl_path}")
+    return send(
+        f"[ratatosk] session ended — {session_id[:8]} turns={turns} jsonl={jsonl_path}"
+    )

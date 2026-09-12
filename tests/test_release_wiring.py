@@ -27,6 +27,7 @@ stops it is one this test asserts is present, wired to the packaged directory
 pyproject actually names, and backed by a config whose hidden set is the
 fleet's and whose reasoning is written beside it.
 """
+
 from __future__ import annotations
 
 import ast
@@ -79,8 +80,9 @@ def test_pyyaml_is_a_declared_dev_dependency():
     dev extra, CI collects these tests, skips them all, and reports green."""
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     dev = pyproject["project"]["optional-dependencies"]["dev"]
-    assert any(req.lower().startswith(("pyyaml", "yaml")) for req in dev), \
+    assert any(req.lower().startswith(("pyyaml", "yaml")) for req in dev), (
         f"PyYAML must be in the dev extra or this whole file skips unnoticed: {dev}"
+    )
 
 
 def test_the_tag_release_please_creates_matches_what_release_yml_listens_for():
@@ -90,8 +92,11 @@ def test_the_tag_release_please_creates_matches_what_release_yml_listens_for():
     willow-mcp#256."""
     cfg = _package_config()
     version = _json(_MANIFEST)["."]
-    tag = (f"{cfg['package-name']}-v{version}"
-           if cfg.get("include-component-in-tag", True) else f"v{version}")
+    tag = (
+        f"{cfg['package-name']}-v{version}"
+        if cfg.get("include-component-in-tag", True)
+        else f"v{version}"
+    )
 
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     patterns = list(_yaml(_RELEASE_WF)[True]["push"]["tags"])
@@ -107,19 +112,21 @@ def test_the_version_has_exactly_one_source():
     second copy, and a second copy is what drifts."""
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     assert "version" in (pyproject["project"].get("dynamic") or [])
-    assert "version" not in pyproject["project"], \
+    assert "version" not in pyproject["project"], (
         "a literal project.version is a second source of truth"
+    )
     assert pyproject["tool"]["hatch"]["version"]["source"] == "vcs"
-    assert not _package_config().get("extra-files"), \
+    assert not _package_config().get("extra-files"), (
         "nothing in this repo stores a version, so nothing needs bumping"
+    )
 
 
 # A credential whose events actually trigger workflows. What is NOT acceptable is
 # GITHUB_TOKEN, whose events GitHub suppresses — the release PR merges, no tag
 # workflow fires, nothing publishes. jeles lost three releases to it.
 NON_SUPPRESSED_CREDENTIALS = (
-    "RELEASE_PLEASE_TOKEN",              # fine-grained PAT (being retired)
-    "steps.app-token.outputs.token",     # willow-ci App installation token
+    "RELEASE_PLEASE_TOKEN",  # fine-grained PAT (being retired)
+    "steps.app-token.outputs.token",  # willow-ci App installation token
 )
 
 
@@ -141,14 +148,17 @@ def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     used: set[str] = set()
     values: list[str] = []
     for step in _rp_steps():
-        for value in list((step.get("env") or {}).values()) + \
-                     list((step.get("with") or {}).values()):
+        for value in list((step.get("env") or {}).values()) + list(
+            (step.get("with") or {}).values()
+        ):
             values.append(str(value))
             used.update(re.findall(r"secrets\.([A-Z_]+)", str(value)))
-    assert any(_names_a_non_suppressed_credential(v) for v in values), \
+    assert any(_names_a_non_suppressed_credential(v) for v in values), (
         f"no non-suppressed credential anywhere in the job; secrets seen: {used}"
-    assert "GITHUB_TOKEN" not in used, \
+    )
+    assert "GITHUB_TOKEN" not in used, (
         f"GITHUB_TOKEN's events do not trigger workflows; found {used}"
+    )
 
 
 def _arming_steps() -> list[dict]:
@@ -166,8 +176,9 @@ def test_auto_merge_waits_for_ci_rather_than_merging_directly():
         for line in step["run"].splitlines():
             if "gh pr merge" in line and not line.strip().startswith("#"):
                 assert "--auto" in line, f"merge without --auto: {line.strip()}"
-                assert "--squash" not in line, \
+                assert "--squash" not in line, (
                     "this fleet merges with merge commits; squash breaks release-please's parse"
+                )
 
 
 def test_the_arming_step_reports_a_failure_instead_of_swallowing_it():
@@ -183,19 +194,25 @@ def test_the_arming_step_reports_a_failure_instead_of_swallowing_it():
         # Read the code, not the commentary. The step explains the `|| true` it
         # replaced, and a plain substring check would flag its own explanation —
         # the same trap kartikeya's pr-title test documents.
-        code = "\n".join(line for line in run.splitlines()
-                         if not line.strip().startswith("#"))
-        assert "|| true" not in code, \
+        code = "\n".join(
+            line for line in run.splitlines() if not line.strip().startswith("#")
+        )
+        assert "|| true" not in code, (
             "`|| true` is what hid the unarmed auto-merge for six releases"
-        assert "::warning::" in code or "::error::" in code, \
+        )
+        assert "::warning::" in code or "::error::" in code, (
             "a failure to arm must be annotated, not swallowed"
+        )
 
 
 def test_the_checkout_can_see_history_and_tags():
-    checkout = next(s for s in _rp_steps()
-                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s for s in _rp_steps() if str(s.get("uses", "")).startswith("actions/checkout")
+    )
     assert checkout["with"]["fetch-depth"] == 0, "needs full history for the range"
-    assert checkout["with"]["fetch-tags"] is True, "needs tags to find the previous release"
+    assert checkout["with"]["fetch-tags"] is True, (
+        "needs tags to find the previous release"
+    )
 
 
 def test_the_required_check_names_a_job_that_actually_exists():
@@ -204,8 +221,9 @@ def test_the_required_check_names_a_job_that_actually_exists():
     forever — the mirror image of requiring nothing, which is where this repo
     started."""
     jobs = _yaml(_TESTS_WF)["jobs"]
-    assert REQUIRED_CHECK in jobs, \
+    assert REQUIRED_CHECK in jobs, (
         f"the ruleset requires the check {REQUIRED_CHECK!r}, absent from {sorted(jobs)}"
+    )
 
 
 def test_the_required_check_actually_gates_the_matrix():
@@ -214,11 +232,13 @@ def test_the_required_check_actually_gates_the_matrix():
     job = _yaml(_TESTS_WF)["jobs"][REQUIRED_CHECK]
     needs = job.get("needs") or []
     needs = [needs] if isinstance(needs, str) else needs
-    assert "test-matrix" in needs, \
+    assert "test-matrix" in needs, (
         f"{REQUIRED_CHECK!r} must depend on test-matrix; needs={needs}"
+    )
     body = " ".join(str(s.get("run", "")) + str(s.get("if", "")) for s in job["steps"])
-    assert "test-matrix" in body and "exit 1" in body, \
+    assert "test-matrix" in body and "exit 1" in body, (
         "the aggregate job must assert the matrix succeeded, not merely follow it"
+    )
 
 
 def test_this_package_is_past_1_0_so_the_pre_major_flags_are_inert():
@@ -234,8 +254,9 @@ def test_this_package_is_past_1_0_so_the_pre_major_flags_are_inert():
     assert major >= 1, f"still pre-1.0 ({version}) — the pre-major flags matter again"
     cfg = _package_config()
     for flag in ("bump-minor-pre-major", "bump-patch-for-minor-pre-major"):
-        assert cfg.get(flag) is False, \
+        assert cfg.get(flag) is False, (
             f"{flag} should stay false: inert now, correct if this ever forks a 0.x line"
+        )
 
 
 # ── the pr-title guard (G2-pr-title) ───────────────────────────────────────
@@ -267,19 +288,22 @@ def _guard_missing_when_armed(root: Path) -> bool:
 
 
 def test_the_pr_title_guard_is_present_because_auto_merge_is_armed():
-    assert _arms_automerge(_REPO), \
+    assert _arms_automerge(_REPO), (
         "release-please.yml no longer arms auto-merge; re-read whether the guard is still required"
-    assert not _guard_missing_when_armed(_REPO), \
+    )
+    assert not _guard_missing_when_armed(_REPO), (
         f"{_PR_TITLE_WF} is missing: a release-cutting PR title would publish unattended"
+    )
 
 
 def _tree(tmp_path: Path, label: str, *, arms: bool, guard: bool) -> Path:
     root = tmp_path / label
     (root / ".github" / "workflows").mkdir(parents=True)
-    line = f"{_ARMS_AUTOMERGE} --merge \"$pr\"" if arms else "gh pr list"
+    line = f'{_ARMS_AUTOMERGE} --merge "$pr"' if arms else "gh pr list"
     (root / ".github" / "workflows" / "release-please.yml").write_text(
         f"jobs:\n  release-please:\n    steps:\n      - run: |\n          {line}\n",
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     if guard:
         (root / _PR_TITLE_WF).write_text("name: PR title\n", encoding="utf-8")
     return root
@@ -290,8 +314,12 @@ def test_the_guard_check_fires_on_a_planted_tree_that_arms_without_the_guard(tmp
     guarded must not; unarmed and unguarded must not, because a hand-merged
     release PR is read by a human before it lands."""
     assert _guard_missing_when_armed(_tree(tmp_path, "bare", arms=True, guard=False))
-    assert not _guard_missing_when_armed(_tree(tmp_path, "guarded", arms=True, guard=True))
-    assert not _guard_missing_when_armed(_tree(tmp_path, "manual", arms=False, guard=False))
+    assert not _guard_missing_when_armed(
+        _tree(tmp_path, "guarded", arms=True, guard=True)
+    )
+    assert not _guard_missing_when_armed(
+        _tree(tmp_path, "manual", arms=False, guard=False)
+    )
 
 
 _PACKAGED_LINE = re.compile(r"^\s*PACKAGED\s*=\s*(\(.*\))\s*$", re.MULTILINE)
@@ -311,13 +339,17 @@ def _packaged_by_pyproject(pyproject_text: str) -> tuple[str, ...]:
     """What pyproject says is installable: each wheel package as a directory
     prefix, plus pyproject.toml itself, since a dependency change there alters
     the installed artifact."""
-    packages = tomllib.loads(pyproject_text)["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    packages = tomllib.loads(pyproject_text)["tool"]["hatch"]["build"]["targets"][
+        "wheel"
+    ]["packages"]
     return tuple(f"{pkg.rstrip('/')}/" for pkg in packages) + ("pyproject.toml",)
 
 
 def _packaged_disagreement(workflow_text: str, pyproject_text: str) -> set[str]:
     """The symmetric difference between the two — empty when they agree."""
-    return set(_packaged_constant(workflow_text)) ^ set(_packaged_by_pyproject(pyproject_text))
+    return set(_packaged_constant(workflow_text)) ^ set(
+        _packaged_by_pyproject(pyproject_text)
+    )
 
 
 def test_the_workflows_packaged_constant_agrees_with_pyproject():
@@ -325,9 +357,11 @@ def test_the_workflows_packaged_constant_agrees_with_pyproject():
     between repos. This is the test the workflow's own comment promises."""
     disagreement = _packaged_disagreement(
         (_REPO / _PR_TITLE_WF).read_text(encoding="utf-8"),
-        (_REPO / "pyproject.toml").read_text(encoding="utf-8"))
-    assert not disagreement, \
+        (_REPO / "pyproject.toml").read_text(encoding="utf-8"),
+    )
+    assert not disagreement, (
         f"pr-title.yml's PACKAGED and pyproject's wheel packages disagree on: {sorted(disagreement)}"
+    )
 
 
 def test_the_packaged_check_catches_a_planted_constant_copied_from_kartikeya():
@@ -352,22 +386,33 @@ def _missing_comments(config_text: str) -> list[str]:
 
 def test_the_hidden_set_is_the_fleets_and_its_reasoning_is_beside_it():
     text = _CONFIG.read_text(encoding="utf-8")
-    assert _hidden_types(text) == _HIDDEN, \
+    assert _hidden_types(text) == _HIDDEN, (
         f"hidden set drifted from the fleet's {sorted(_HIDDEN)}: {sorted(_hidden_types(text))}"
-    assert _missing_comments(text) == [], \
+    )
+    assert _missing_comments(text) == [], (
         "the hidden set may not be edited without reading why it is what it is"
+    )
 
 
 def test_the_hidden_set_check_catches_a_planted_config_that_unhides_ci():
     """Planted: `ci` without `hidden: true`, and the reasoning comment gone —
     jeles v0.4.1, as a config file."""
-    planted = json.dumps({"packages": {".": {"changelog-sections": [
-        {"type": "feat", "section": "Added"},
-        {"type": "docs", "section": "Docs", "hidden": True},
-        {"type": "test", "section": "Tests", "hidden": True},
-        {"type": "ci", "section": "CI"},
-        {"type": "chore", "section": "Chores", "hidden": True},
-    ], "$comment-what-cuts-a-release": "kept"}}})
+    planted = json.dumps(
+        {
+            "packages": {
+                ".": {
+                    "changelog-sections": [
+                        {"type": "feat", "section": "Added"},
+                        {"type": "docs", "section": "Docs", "hidden": True},
+                        {"type": "test", "section": "Tests", "hidden": True},
+                        {"type": "ci", "section": "CI"},
+                        {"type": "chore", "section": "Chores", "hidden": True},
+                    ],
+                    "$comment-what-cuts-a-release": "kept",
+                }
+            }
+        }
+    )
     assert _hidden_types(planted) == {"chore", "docs", "test"}
     assert _missing_comments(planted) == ["$comment-hidden-rule"]
 
@@ -388,10 +433,12 @@ def _gate_missing_for_pile(root: Path) -> bool:
 
 def test_the_trailer_gate_is_present_because_a_pile_exists():
     assert (_REPO / _PILE).exists(), f"{_PILE} is the pile this repo keeps"
-    assert not _gate_missing_for_pile(_REPO), \
+    assert not _gate_missing_for_pile(_REPO), (
         f"{_TRAILERS_WF} is missing: a dangling Idea-Id trailer would go unverified"
-    assert _workflow_verifies_the_pile((_REPO / _TRAILERS_WF).read_text(encoding="utf-8")), \
-        "the workflow must verify the pile this repo actually keeps"
+    )
+    assert _workflow_verifies_the_pile(
+        (_REPO / _TRAILERS_WF).read_text(encoding="utf-8")
+    ), "the workflow must verify the pile this repo actually keeps"
 
 
 def _workflow_verifies_the_pile(workflow_text: str) -> bool:
@@ -403,9 +450,15 @@ def _workflow_verifies_the_pile(workflow_text: str) -> bool:
 def test_the_workflow_check_catches_a_planted_workflow_verifying_another_pile():
     """Planted: a trailers workflow copied from a sibling that keeps its pile
     elsewhere, and one using the bare `--repo .` that does not resolve."""
-    assert not _workflow_verifies_the_pile("run: reconciler verify --repo ./ --doc docs/IDEAS.md\n")
-    assert not _workflow_verifies_the_pile("run: reconciler verify --repo . --doc docs/ideas.md\n")
-    assert _workflow_verifies_the_pile("run: reconciler verify --repo ./ --doc docs/ideas.md\n")
+    assert not _workflow_verifies_the_pile(
+        "run: reconciler verify --repo ./ --doc docs/IDEAS.md\n"
+    )
+    assert not _workflow_verifies_the_pile(
+        "run: reconciler verify --repo . --doc docs/ideas.md\n"
+    )
+    assert _workflow_verifies_the_pile(
+        "run: reconciler verify --repo ./ --doc docs/ideas.md\n"
+    )
 
 
 def _pile_tree(tmp_path: Path, label: str, *, pile: bool, gate: bool) -> Path:
@@ -419,12 +472,20 @@ def _pile_tree(tmp_path: Path, label: str, *, pile: bool, gate: bool) -> Path:
     return root
 
 
-def test_the_trailer_gate_check_fires_on_a_planted_tree_with_a_pile_and_no_gate(tmp_path):
+def test_the_trailer_gate_check_fires_on_a_planted_tree_with_a_pile_and_no_gate(
+    tmp_path,
+):
     """Planted: a pile and no gate must be reported; a pile with the gate must
     not; no pile at all must not, since there is nothing to verify."""
-    assert _gate_missing_for_pile(_pile_tree(tmp_path, "ungated", pile=True, gate=False))
-    assert not _gate_missing_for_pile(_pile_tree(tmp_path, "gated", pile=True, gate=True))
-    assert not _gate_missing_for_pile(_pile_tree(tmp_path, "nopile", pile=False, gate=False))
+    assert _gate_missing_for_pile(
+        _pile_tree(tmp_path, "ungated", pile=True, gate=False)
+    )
+    assert not _gate_missing_for_pile(
+        _pile_tree(tmp_path, "gated", pile=True, gate=True)
+    )
+    assert not _gate_missing_for_pile(
+        _pile_tree(tmp_path, "nopile", pile=False, gate=False)
+    )
 
 
 # ── every job carries an effective permissions grant ───────────────────────
@@ -441,8 +502,11 @@ def _jobs_without_permissions(workflow_text: str) -> list[str]:
     doc = yaml.safe_load(workflow_text) or {}
     if "permissions" in doc:
         return []
-    return [name for name, job in (doc.get("jobs") or {}).items()
-            if "permissions" not in (job or {})]
+    return [
+        name
+        for name, job in (doc.get("jobs") or {}).items()
+        if "permissions" not in (job or {})
+    ]
 
 
 def test_every_workflow_job_has_an_effective_permissions_grant():
@@ -451,8 +515,9 @@ def test_every_workflow_job_has_an_effective_permissions_grant():
         for path in sorted(_WORKFLOWS_DIR.glob("*.yml"))
         if (missing := _jobs_without_permissions(path.read_text(encoding="utf-8")))
     }
-    assert not offenders, \
+    assert not offenders, (
         f"jobs whose GITHUB_TOKEN falls back to the repository default: {offenders}"
+    )
 
 
 def test_the_permissions_check_catches_a_planted_workflow_with_no_grant():
@@ -461,8 +526,10 @@ def test_the_permissions_check_catches_a_planted_workflow_with_no_grant():
     its own job and leave the others reported."""
     bare = "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-latest\n"
     assert _jobs_without_permissions(bare) == ["a", "b"]
-    top = "on: push\npermissions:\n  contents: read\n" + bare[len("on: push\n"):]
+    top = "on: push\npermissions:\n  contents: read\n" + bare[len("on: push\n") :]
     assert _jobs_without_permissions(top) == []
-    per_job = ("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
-               "    permissions:\n      id-token: write\n  b:\n    runs-on: ubuntu-latest\n")
+    per_job = (
+        "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    permissions:\n      id-token: write\n  b:\n    runs-on: ubuntu-latest\n"
+    )
     assert _jobs_without_permissions(per_job) == ["b"]

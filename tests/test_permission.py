@@ -10,7 +10,8 @@ The article ID is cited alongside the precise one because the charter does not
 yet write a Trace ID for the sub-clause, and the coverage report only knows
 about clauses the constitution defines.
 """
-import json
+
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -91,7 +92,10 @@ def test_trust_does_relax_the_unmatched_default(tmp_path, monkeypatch):
 def test_a_scoped_rule_decides_the_command_it_names(tmp_path, monkeypatch):
     policy = _policy(tmp_path, monkeypatch)
     policy.set_rule("Bash(git status*)", "allow")
-    assert check("Bash", {"command": "git status --short"}, policy=policy).verdict is Verdict.ALLOW
+    assert (
+        check("Bash", {"command": "git status --short"}, policy=policy).verdict
+        is Verdict.ALLOW
+    )
 
 
 def test_a_scoped_rule_leaves_other_commands_to_the_default(tmp_path, monkeypatch):
@@ -106,7 +110,9 @@ def test_trust_does_not_override_an_explicit_scoped_confirm(tmp_path, monkeypatc
     for a scoped rule too, or scoping a rule would quietly weaken it."""
     policy = _policy(tmp_path, monkeypatch)
     policy.set_rule("Bash(git push*)", "confirm")
-    decision = check("Bash", {"command": "git push origin main"}, trusted=True, policy=policy)
+    decision = check(
+        "Bash", {"command": "git push origin main"}, trusted=True, policy=policy
+    )
     assert decision.verdict is Verdict.CONFIRM
     assert "does not override" in decision.reason
 
@@ -133,7 +139,9 @@ def test_deny_still_returns_an_error_value(tmp_path, monkeypatch):
     """Asymmetric on purpose: a denial is an answer, a confirm is unfinished."""
     policy = _policy(tmp_path, monkeypatch)
     policy.set_rule("Read", "deny")
-    result = dispatch("Read", {"file_path": __file__}, set(), None, trusted=True, policy_store=policy)
+    result = dispatch(
+        "Read", {"file_path": __file__}, set(), None, trusted=True, policy_store=policy
+    )
     assert "refused" in str(result)
 
 
@@ -141,7 +149,10 @@ def test_deny_beats_allow_from_the_other_source(tmp_path, monkeypatch):
     """CONST-X-4: any denial denies. Neither source outranks the other."""
     policy = _policy(tmp_path, monkeypatch)
     policy.set_rule("Bash", "deny")
-    assert check("Bash", {"command": "echo hi"}, trusted=True, policy=policy).verdict is Verdict.DENY
+    assert (
+        check("Bash", {"command": "echo hi"}, trusted=True, policy=policy).verdict
+        is Verdict.DENY
+    )
 
 
 def test_a_policy_allow_does_not_overrule_the_gate(tmp_path, monkeypatch):
@@ -194,7 +205,7 @@ def test_the_gate_drains(tmp_path, monkeypatch):
     policy = _policy(tmp_path, monkeypatch)
     gate = CapabilityGate()
     for i in range(20):
-        check(f"Bash", {"command": f"echo {i}"}, trusted=False, policy=policy, gate=gate)
+        check("Bash", {"command": f"echo {i}"}, trusted=False, policy=policy, gate=gate)
     assert gate.pending == {}
 
 
@@ -243,5 +254,5 @@ def test_prompt_and_dispatch_refusal_does_not_run_the_tool(tmp_path, monkeypatch
 def test_decision_is_frozen_and_reports_allowed():
     d = Decision(Verdict.ALLOW, "ok", "policy")
     assert d.allowed
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         d.verdict = Verdict.DENY

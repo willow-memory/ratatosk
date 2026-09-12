@@ -4,6 +4,7 @@
 history entry in it is three concatenated JSON objects, which is what the
 server actually sends and what every hand-written fake in this suite got wrong.
 """
+
 import json
 from pathlib import Path
 
@@ -16,10 +17,14 @@ from ratatosk.mcp_client import decode_payloads
 
 CASSETTE = Path(__file__).parent / "cassettes" / "willow_mcp.json"
 
-HISTORY_CALL = ("grove_get_history", {"app_id": "ratatosk", "channel_name": "willow", "limit": 3})
+HISTORY_CALL = (
+    "grove_get_history",
+    {"app_id": "ratatosk", "channel_name": "willow", "limit": 3},
+)
 
 
 # ---- decode_payloads ------------------------------------------------------
+
 
 def test_one_document_decodes_to_one_value():
     assert decode_payloads('{"a": 1}') == [{"a": 1}]
@@ -27,7 +32,11 @@ def test_one_document_decodes_to_one_value():
 
 def test_concatenated_objects_all_decode():
     """The shape willow-mcp actually sends: one content chunk per row."""
-    assert decode_payloads('{"id": 1}\n{"id": 2}\n{"id": 3}') == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert decode_payloads('{"id": 1}\n{"id": 2}\n{"id": 3}') == [
+        {"id": 1},
+        {"id": 2},
+        {"id": 3},
+    ]
 
 
 def test_nothing_json_decodes_to_nothing():
@@ -41,6 +50,7 @@ def test_a_malformed_tail_keeps_what_parsed():
 
 
 # ---- the defect the cassette found ----------------------------------------
+
 
 def test_a_real_page_of_history_parses_as_messages():
     """The regression. `json.loads` over the whole string raises "Extra data"
@@ -69,12 +79,15 @@ def test_an_error_among_concatenated_rows_is_not_a_page():
 def test_a_concatenated_error_payload_is_not_a_successful_send():
     """grove._failure_detail had the same assumption: json.loads over the whole
     string, and its except-branch read the failure as a success."""
-    detail = grove._failure_detail('{"ok": false}\n{"error": "gate denied: grove_send_message"}')
+    detail = grove._failure_detail(
+        '{"ok": false}\n{"error": "gate denied: grove_send_message"}'
+    )
     assert detail is not None
     assert "gate denied" in detail
 
 
 # ---- replay ---------------------------------------------------------------
+
 
 def test_the_cassette_is_the_schema_it_claims():
     doc = json.loads(CASSETTE.read_text(encoding="utf-8"))
@@ -98,12 +111,15 @@ def test_repeated_calls_hold_on_the_last_answer():
 
 def test_a_foreign_schema_is_refused(tmp_path):
     bogus = tmp_path / "bogus.json"
-    bogus.write_text(json.dumps({"schema": "vcr/2", "interactions": []}), encoding="utf-8")
+    bogus.write_text(
+        json.dumps({"schema": "vcr/2", "interactions": []}), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="not a ratatosk-cassette"):
         replay(bogus)
 
 
 # ---- scrubbing ------------------------------------------------------------
+
 
 def test_scrubbing_keeps_the_layout_and_drops_the_payload():
     raw = '{"id": 1, "content": "secret fleet chatter", "sender": "willow"}\n{"id": 2, "content": "more"}'
@@ -150,19 +166,38 @@ def test_the_leak_check_catches_a_planted_unscrubbed_cassette(tmp_path):
     """Planted: the same recorder with scrubbing switched off. The secret
     reaches disk, and the check must say so — otherwise the test above
     proves nothing about the scrub, only about the check's silence."""
-    recorder = Recorder(inner=lambda tool, inputs: '{"content": "load-bearing secret"}',
-                        scrub_keys=frozenset())
+    recorder = Recorder(
+        inner=lambda tool, inputs: '{"content": "load-bearing secret"}',
+        scrub_keys=frozenset(),
+    )
     recorder.call("grove_get_history", {"app_id": "ratatosk"})
     path = recorder.save(tmp_path / "leaky.json", server="python -m willow_mcp")
 
     assert _stored_cassette_carries(path, "load-bearing secret")
 
 
-SMOKE_HISTORY = ("grove_get_history", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke", "limit": 1})
-SEND_OK = ("grove_send_message", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke",
-                                  "content": "[ratatosk] cassette refresh", "sender": "ratatosk"})
-SEND_REFUSED = ("grove_send_message", {"app_id": "ratatosk", "channel_name": "ratatosk-smoke",
-                                       "content": "[ratatosk] refusal probe", "sender": "not-ratatosk"})
+SMOKE_HISTORY = (
+    "grove_get_history",
+    {"app_id": "ratatosk", "channel_name": "ratatosk-smoke", "limit": 1},
+)
+SEND_OK = (
+    "grove_send_message",
+    {
+        "app_id": "ratatosk",
+        "channel_name": "ratatosk-smoke",
+        "content": "[ratatosk] cassette refresh",
+        "sender": "ratatosk",
+    },
+)
+SEND_REFUSED = (
+    "grove_send_message",
+    {
+        "app_id": "ratatosk",
+        "channel_name": "ratatosk-smoke",
+        "content": "[ratatosk] refusal probe",
+        "sender": "not-ratatosk",
+    },
+)
 
 
 def test_a_one_message_page_is_one_message():
@@ -185,4 +220,6 @@ def test_a_real_send_refusal_is_read_as_one():
 
 
 def test_an_unknown_tool_is_a_transport_error():
-    assert grove._failure_detail(replay(CASSETTE)("no_such_tool", {"app_id": "ratatosk"})).startswith("[mcp-error]")
+    assert grove._failure_detail(
+        replay(CASSETTE)("no_such_tool", {"app_id": "ratatosk"})
+    ).startswith("[mcp-error]")

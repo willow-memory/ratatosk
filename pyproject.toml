@@ -55,3 +55,16 @@ packages = ["ratatosk"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Ruff's defaults, minus one rule kept deliberately rather than suppressed
+# thirty times over. BLE001 (a bare `except Exception`) is this runtime's
+# design at every seam where a tool, a hook, a provider or the MCP transport
+# can fail: the session must outlive the failure, so the catch is total and
+# what it caught is turned into prose the model can act on (`problem()` in
+# tools.py) or a logged receipt. Narrowing those would reintroduce the exact
+# crash class a897374 closed. Every other rule ruff enables is enforced.
+ignore = ["BLE001"]

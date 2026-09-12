@@ -10,10 +10,14 @@ from ratatosk.policy import PolicyRule, PolicyStore
 
 def _state(tmp_path, monkeypatch) -> RuntimeState:
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj"))
+    monkeypatch.setenv(
+        "RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj")
+    )
     writer = _session.SessionWriter(cwd=str(tmp_path))
     return RuntimeState(
-        args=argparse.Namespace(local=True, trust=False, mcp=False, listen=False, deposit=False),
+        args=argparse.Namespace(
+            local=True, trust=False, mcp=False, listen=False, deposit=False
+        ),
         model="test-model",
         writer=writer,
         history=[],
@@ -60,7 +64,9 @@ def test_list_says_nothing_extra_when_every_rule_is_live(tmp_path, monkeypatch, 
     assert "never fire" not in out
 
 
-def test_explain_reports_the_verdict_without_running_anything(tmp_path, monkeypatch, capsys):
+def test_explain_reports_the_verdict_without_running_anything(
+    tmp_path, monkeypatch, capsys
+):
     state = _state(tmp_path, monkeypatch)
     state.policy.set_rule("Read", "deny")
     router = CommandRouter(state)
@@ -72,7 +78,9 @@ def test_explain_reports_the_verdict_without_running_anything(tmp_path, monkeypa
     assert "nothing was executed" in out
 
 
-def test_explain_agrees_with_the_gate_that_actually_decides(tmp_path, monkeypatch, capsys):
+def test_explain_agrees_with_the_gate_that_actually_decides(
+    tmp_path, monkeypatch, capsys
+):
     """An explainer that answers a different question than `check` is worse
     than none — the operator would tune rules against a fiction."""
     state = _state(tmp_path, monkeypatch)
@@ -121,7 +129,9 @@ def test_explain_reads_a_path_through_the_scope(tmp_path, monkeypatch, capsys):
     assert "Write -> confirm" in capsys.readouterr().out
 
 
-def test_explain_shows_the_gate_overruling_a_policy_allow(tmp_path, monkeypatch, capsys):
+def test_explain_shows_the_gate_overruling_a_policy_allow(
+    tmp_path, monkeypatch, capsys
+):
     """The two vocabularies are separate and most-restrictive wins. A scoped
     `allow` on the policy side does not buy past the capability gate, and the
     explainer has to show which source actually decided."""
@@ -174,7 +184,9 @@ def test_an_empty_session_says_nothing_was_written(tmp_path, monkeypatch, capsys
     assert "nothing written, nothing indexed" in out
     assert "Session written:" not in out
     assert "index failed" not in out
-    assert not state.writer.path.exists(), "must not touch a file to make the sentence true"
+    assert not state.writer.path.exists(), (
+        "must not touch a file to make the sentence true"
+    )
 
 
 def test_a_session_with_entries_still_reports_the_path(tmp_path, monkeypatch, capsys):
@@ -188,7 +200,9 @@ def test_a_session_with_entries_still_reports_the_path(tmp_path, monkeypatch, ca
     assert "nothing written" not in out
 
 
-def test_an_empty_session_with_deposit_says_there_is_no_deposit(tmp_path, monkeypatch, capsys):
+def test_an_empty_session_with_deposit_says_there_is_no_deposit(
+    tmp_path, monkeypatch, capsys
+):
     state = _state(tmp_path, monkeypatch)
     state.args.deposit = True
 

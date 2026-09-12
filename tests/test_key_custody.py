@@ -1,4 +1,5 @@
 """A file-loaded key never enters the environment, and never reaches a child."""
+
 import json
 import sys
 
@@ -89,7 +90,9 @@ def test_hook_subprocess_cannot_print_the_key(tmp_path, monkeypatch):
     script = tmp_path / "hook.py"
     script.write_text("import os,sys;sys.stderr.write(str(dict(os.environ)))")
     cfg = tmp_path / "hooks.json"
-    cfg.write_text(json.dumps({"events": {"PreTool": [{"script": str(script), "timeout_s": 10}]}}))
+    cfg.write_text(
+        json.dumps({"events": {"PreTool": [{"script": str(script), "timeout_s": 10}]}})
+    )
     runtime = HookRuntime(config_path=cfg)
     results = runtime.run_event("PreTool", {"tool_name": "Bash"})
     assert results, "the hook should have run"

@@ -1,7 +1,6 @@
 import pytest
 
 from ratatosk.listener import BusListener
-from ratatosk.protocol.envelope import Intent
 
 
 def test_listener_refuses_unset_channel(monkeypatch):
@@ -156,14 +155,16 @@ def test_a_refused_reply_is_reported_not_swallowed(monkeypatch):
         refusals.append(tool)
         return '{"error": "sender_forbidden", "detail": "needs grove_relay"}'
 
-    listener = BusListener(node="ratatosk", channel="ratatosk-smoke", mcp_call=refusing_call)
+    listener = BusListener(
+        node="ratatosk", channel="ratatosk-smoke", mcp_call=refusing_call
+    )
     out = listener.process_message(
         {
             "sender": "willow",
             "content": '{"v":1,"to":"ratatosk","intent":"open_status","prompt":"status",'
-                       '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
-                       '"nonce":"n1","trace_id":"tr-refused","expires_at":"2099-01-01T00:00:00Z",'
-                       '"requires_confirm":false}',
+            '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
+            '"nonce":"n1","trace_id":"tr-refused","expires_at":"2099-01-01T00:00:00Z",'
+            '"requires_confirm":false}',
         }
     )
     assert refusals == ["grove_send_message"], "it must have tried"
@@ -180,14 +181,16 @@ def test_wake_dispatches_to_the_seat_runtime(monkeypatch):
         calls.append(env.trace_id)
         return f"[seat] worked packet {env.trace_id}"
 
-    listener = BusListener(node="ratatosk", channel="general", mcp_call=None, activate=activate)
+    listener = BusListener(
+        node="ratatosk", channel="general", mcp_call=None, activate=activate
+    )
     out = listener.process_message(
         {
             "sender": "willow",
             "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
-                       '"reply_channel":"general","mode":"ollama","capabilities":[],'
-                       '"nonce":"wake1","trace_id":"tr-wake-1","expires_at":"2099-01-01T00:00:00Z",'
-                       '"requires_confirm":false}',
+            '"reply_channel":"general","mode":"ollama","capabilities":[],'
+            '"nonce":"wake1","trace_id":"tr-wake-1","expires_at":"2099-01-01T00:00:00Z",'
+            '"requires_confirm":false}',
         }
     )
     assert calls == ["tr-wake-1"]
@@ -200,9 +203,9 @@ def test_wake_without_activate_acknowledges_but_does_nothing():
         {
             "sender": "willow",
             "content": '{"v":1,"to":"ratatosk","intent":"wake","prompt":"packet-dispatch",'
-                       '"reply_channel":"general","mode":"ollama","capabilities":[],'
-                       '"nonce":"wake2","trace_id":"tr-wake-2","expires_at":"2099-01-01T00:00:00Z",'
-                       '"requires_confirm":false}',
+            '"reply_channel":"general","mode":"ollama","capabilities":[],'
+            '"nonce":"wake2","trace_id":"tr-wake-2","expires_at":"2099-01-01T00:00:00Z",'
+            '"requires_confirm":false}',
         }
     )
     assert "tr-wake-2" in out
@@ -231,16 +234,19 @@ def test_emit_heartbeat_is_a_noop_without_transport():
 def test_a_delivered_reply_returns_the_answer(monkeypatch):
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "ratatosk-smoke")
     listener = BusListener(
-        node="ratatosk", channel="ratatosk-smoke",
-        mcp_call=lambda tool, inputs: '{"id": 1, "channel": "ratatosk-smoke", "sent": true}',
+        node="ratatosk",
+        channel="ratatosk-smoke",
+        mcp_call=lambda tool, inputs: (
+            '{"id": 1, "channel": "ratatosk-smoke", "sent": true}'
+        ),
     )
     out = listener.process_message(
         {
             "sender": "willow",
             "content": '{"v":1,"to":"ratatosk","intent":"open_status","prompt":"status",'
-                       '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
-                       '"nonce":"n2","trace_id":"tr-ok","expires_at":"2099-01-01T00:00:00Z",'
-                       '"requires_confirm":false}',
+            '"reply_channel":"ratatosk-smoke","mode":"ollama","capabilities":["open_status"],'
+            '"nonce":"n2","trace_id":"tr-ok","expires_at":"2099-01-01T00:00:00Z",'
+            '"requires_confirm":false}',
         }
     )
     assert out.startswith("node=ratatosk")

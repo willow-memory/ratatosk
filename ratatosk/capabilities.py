@@ -1,4 +1,5 @@
 """Capability gate — no raw remote shell by default."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

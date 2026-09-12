@@ -1,7 +1,9 @@
 """Ratatosk entry point — platform session runtime."""
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -12,9 +14,15 @@ from ratatosk import grove as _grove
 from ratatosk import session as _session
 from ratatosk import sync as _sync
 from ratatosk import tools as _tools
-from ratatosk.history import ensure_history_db, index_session, list_sessions, load_session_history, search_sessions
-from ratatosk.hooks import HookRuntime
 from ratatosk.capabilities import CapabilityGate
+from ratatosk.history import (
+    ensure_history_db,
+    index_session,
+    list_sessions,
+    load_session_history,
+    search_sessions,
+)
+from ratatosk.hooks import HookRuntime
 from ratatosk.permission import check as _permission_check
 from ratatosk.policy import PolicyStore, shadowed_rules, subject_field
 from ratatosk.redact import redact
@@ -48,11 +56,17 @@ _WILLOW_ROOT = _resolve_willow_root()
 
 def _blocks(message: dict) -> list[dict]:
     content = message.get("content")
-    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+    return (
+        [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+    )
 
 
 def _tool_use_ids(message: dict) -> set[str]:
-    return {b.get("id") for b in _blocks(message) if b.get("type") == "tool_use" and b.get("id")}
+    return {
+        b.get("id")
+        for b in _blocks(message)
+        if b.get("type") == "tool_use" and b.get("id")
+    }
 
 
 def _tool_result_ids(message: dict) -> set[str]:
@@ -86,7 +100,7 @@ def _safe_start(history: list[dict], index: int) -> int:
     return index
 
 
-def _overhead(state: "RuntimeState | None") -> int:
+def _overhead(state: RuntimeState | None) -> int:
     """What the budget was ignoring: the system prompt and the tool schemas.
 
     `_MAX_CHARS` counted the history alone. With MCP connected the serialized
@@ -103,7 +117,9 @@ def _overhead(state: "RuntimeState | None") -> int:
 
 def _size(history: list[dict]) -> int:
     return sum(
-        len(m["content"]) if isinstance(m["content"], str) else sum(len(str(b)) for b in m["content"])
+        len(m["content"])
+        if isinstance(m["content"], str)
+        else sum(len(str(b)) for b in m["content"])
         for m in history
     )
 
@@ -139,7 +155,7 @@ class CompactionReceipt:
 
 
 def _compact(
-    history: list[dict], state: "RuntimeState | None" = None
+    history: list[dict], state: RuntimeState | None = None
 ) -> tuple[list[dict], CompactionReceipt | None]:
     """Trim history to fit, and say what that cost.
 
@@ -193,7 +209,7 @@ def _compact(
     return kept, receipt
 
 
-def _record_compaction(state: "RuntimeState", receipt: CompactionReceipt) -> None:
+def _record_compaction(state: RuntimeState, receipt: CompactionReceipt) -> None:
     """Tell the operator and the transcript what was forgotten.
 
     The transcript half is the point. `/resume` reads the JSONL and the tier-0
@@ -218,7 +234,11 @@ def _load_system_prompt() -> str:
             content = path.read_text(encoding="utf-8").strip()
             if content:
                 parts.append(f"# {path}\n\n{content}")
-    return "\n\n---\n\n".join(parts) if parts else "You are Ratatosk — platform session runtime."
+    return (
+        "\n\n---\n\n".join(parts)
+        if parts
+        else "You are Ratatosk — platform session runtime."
+    )
 
 
 def _credential_files() -> list[Path]:
@@ -238,13 +258,14 @@ def _load_api_key() -> str:
         return key
     for candidate in _credential_files():
         if candidate.exists():
-            try:
+            # A credentials file that will not parse is a file to skip, not a
+            # reason to refuse the ones after it. Deliberately silent: the
+            # failure to read a key must never be reported beside the key.
+            with contextlib.suppress(Exception):
                 data = json.loads(candidate.read_text(encoding="utf-8"))
                 key = data.get("ANTHROPIC_API_KEY", "")
                 if key:
                     return key
-            except Exception:
-                pass
     return ""
 
 
@@ -260,12 +281,10 @@ def credential_source() -> str:
         return "env:ANTHROPIC_API_KEY"
     for candidate in _credential_files():
         if candidate.exists():
-            try:
+            with contextlib.suppress(Exception):  # same rule as _load_api_key
                 data = json.loads(candidate.read_text(encoding="utf-8"))
                 if data.get("ANTHROPIC_API_KEY"):
                     return f"file:{candidate}"
-            except Exception:
-                continue
     return "missing"
 
 
@@ -352,7 +371,9 @@ class CommandRouter:
             return False
         for row in rows:
             summary = row.first_prompt or "(empty prompt)"
-            print(f"  {row.session_id[:8]}  {row.ended_at}  turns={row.turns}  {summary}")
+            print(
+                f"  {row.session_id[:8]}  {row.ended_at}  turns={row.turns}  {summary}"
+            )
         return False
 
     def _cmd_resume(self, arg: str) -> bool:
@@ -371,7 +392,9 @@ class CommandRouter:
             print(f"  session found but history unavailable: {chosen.session_id}")
             return False
         note = f"[System note: resumed context from session {chosen.session_id[:8]}]"
-        self.state.history = [{"role": "user", "content": note}] + prior[-(_MAX_TURNS * 2) :]
+        self.state.history = [{"role": "user", "content": note}] + prior[
+            -(_MAX_TURNS * 2) :
+        ]
         self.state.resumed_from = chosen.session_id
         self.state.writer.write_system(note)
         print(f"  resumed from {chosen.session_id} ({len(prior)} message(s) loaded)")
@@ -399,7 +422,9 @@ class CommandRouter:
         out = Path(target)
         if not out.is_absolute():
             out = Path.cwd() / out
-        out.write_text(_render_transcript(self.state.writer.read_entries()), encoding="utf-8")
+        out.write_text(
+            _render_transcript(self.state.writer.read_entries()), encoding="utf-8"
+        )
         print(f"  exported: {out}")
         return False
 
@@ -420,7 +445,9 @@ class CommandRouter:
                     line += f"   [unreachable: '{hit.by.pattern}' above answers first]"
                 print(line)
             if eaten:
-                print(f"  {len(eaten)} rule(s) never fire — remove them or reorder above the rule that eats them")
+                print(
+                    f"  {len(eaten)} rule(s) never fire — remove them or reorder above the rule that eats them"
+                )
             return False
         if parts[0] == "explain" and len(parts) >= 2:
             tool_name = parts[1]
@@ -441,7 +468,9 @@ class CommandRouter:
             print(f"  reason: {decision.reason or '(none given)'}")
             print(f"  source: {decision.source}")
             if field and not rest:
-                print(f"  note: no {field} given, so a rule scoped to one could not match")
+                print(
+                    f"  note: no {field} given, so a rule scoped to one could not match"
+                )
             print("  (dry run — nothing was executed)")
             return False
         # The pattern is everything between the verb and the action, not one
@@ -504,11 +533,15 @@ class CommandRouter:
             print(f"  {message}")
         else:
             print("  no compaction needed")
-        self.state.hooks.run_event("PostCompact", {"before": before, "after": len(self.state.history)})
+        self.state.hooks.run_event(
+            "PostCompact", {"before": before, "after": len(self.state.history)}
+        )
         return False
 
     def _cmd_help(self, _arg: str) -> bool:
-        print("  /exit /clear /status /sessions /resume /doctor /export /permissions /hooks /compact")
+        print(
+            "  /exit /clear /status /sessions /resume /doctor /export /permissions /hooks /compact"
+        )
         return False
 
 
@@ -547,7 +580,11 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         assistant_content = final.message.content
         state.writer.write_assistant(response_text)
         state.history.append({"role": "assistant", "content": assistant_content})
-        tool_uses = [block for block in assistant_content if getattr(block, "type", None) == "tool_use"]
+        tool_uses = [
+            block
+            for block in assistant_content
+            if getattr(block, "type", None) == "tool_use"
+        ]
         if not tool_uses:
             state.history, compacted = _compact(state.history, state)
             if compacted:
@@ -566,7 +603,9 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
                 hook_runtime=state.hooks,
             )
             print(f"  [tool:{tu.name}] → {str(result)[:120]}", flush=True)
-            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(result)})
+            tool_results.append(
+                {"type": "tool_result", "tool_use_id": tu.id, "content": str(result)}
+            )
         state.history.append({"role": "user", "content": tool_results})
 
 
@@ -588,7 +627,9 @@ def _shutdown(state: RuntimeState) -> None:
             from ratatosk import mcp_client
 
             if not mcp_client.shutdown():
-                print("  [mcp] stdio teardown did not finish within timeout", flush=True)
+                print(
+                    "  [mcp] stdio teardown did not finish within timeout", flush=True
+                )
         except Exception as exc:
             print(f"  [mcp] shutdown failed: {exc}", flush=True)
 
@@ -600,7 +641,9 @@ def _shutdown(state: RuntimeState) -> None:
         print(f"  [grove] session_ended failed: {exc}", flush=True)
 
     try:
-        state.hooks.run_event("SessionEnd", {"session_id": writer.session_id, "turns": turns})
+        state.hooks.run_event(
+            "SessionEnd", {"session_id": writer.session_id, "turns": turns}
+        )
     except Exception as exc:
         print(f"  [hooks] SessionEnd failed: {exc}", flush=True)
 
@@ -639,13 +682,25 @@ def _shutdown(state: RuntimeState) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ratatosk — Willow platform session runtime")
+    parser = argparse.ArgumentParser(
+        description="Ratatosk — Willow platform session runtime"
+    )
     parser.add_argument("--model", default="claude-sonnet-4-6")
-    parser.add_argument("--trust", action="store_true", help="Execute tools without per-call confirmation")
-    parser.add_argument("--mcp", action="store_true", help="Connect to willow-mcp via stdio")
+    parser.add_argument(
+        "--trust",
+        action="store_true",
+        help="Execute tools without per-call confirmation",
+    )
+    parser.add_argument(
+        "--mcp", action="store_true", help="Connect to willow-mcp via stdio"
+    )
     parser.add_argument("--local", action="store_true", help="Route to local Ollama")
-    parser.add_argument("--listen", action="store_true", help="Run Grove bus listener (requires --mcp)")
-    parser.add_argument("--deposit", action="store_true", help="Write tier-0 session deposit on exit")
+    parser.add_argument(
+        "--listen", action="store_true", help="Run Grove bus listener (requires --mcp)"
+    )
+    parser.add_argument(
+        "--deposit", action="store_true", help="Write tier-0 session deposit on exit"
+    )
     args = parser.parse_args()
 
     # The help text has always said --listen requires --mcp, but nothing
@@ -653,7 +708,9 @@ def main() -> None:
     # alone fell through to an ordinary REPL. Asking for a bus listener and
     # silently getting a chat prompt is the flag lying about what it did.
     if args.listen and not args.mcp:
-        parser.error("--listen requires --mcp: the bus listener speaks to willow-mcp over stdio")
+        parser.error(
+            "--listen requires --mcp: the bus listener speaks to willow-mcp over stdio"
+        )
 
     # A configured channel and no transport is a misconfiguration the operator
     # should hear about at startup, not discover in a failed receipt halfway
@@ -703,14 +760,19 @@ def main() -> None:
             refused = ""
             try:
                 listener = BusListener(mcp_call=mcp_call)
-                listener.run_forever(on_status=lambda msg: print(f"  [listen] {msg}", flush=True))
+                listener.run_forever(
+                    on_status=lambda msg: print(f"  [listen] {msg}", flush=True)
+                )
             except KeyboardInterrupt:
                 print("\n  [listen] stopped", flush=True)
             except ValueError as exc:
                 refused = str(exc)
             finally:
                 if not mcp_client.shutdown():
-                    print("  [mcp] stdio teardown did not finish within timeout", flush=True)
+                    print(
+                        "  [mcp] stdio teardown did not finish within timeout",
+                        flush=True,
+                    )
             if refused:
                 # Same refusal the termux boot script prints, and the same exit
                 # code: an unconfigured listener is a failure, not a quiet no-op.
@@ -748,7 +810,9 @@ def main() -> None:
     )
     router = CommandRouter(state)
     start_receipt = _grove.session_started(writer.session_id, model)
-    state.hooks.run_event("SessionStart", {"session_id": writer.session_id, "model": model})
+    state.hooks.run_event(
+        "SessionStart", {"session_id": writer.session_id, "model": model}
+    )
     if not start_receipt.skipped and not start_receipt.ok:
         print(f"  [grove] {start_receipt.detail}", flush=True)
 

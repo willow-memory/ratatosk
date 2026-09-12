@@ -1,4 +1,5 @@
 """The session closes even when the turn does not."""
+
 import argparse
 import importlib
 
@@ -10,8 +11,12 @@ from ratatosk.policy import PolicyStore
 
 def _state(tmp_path, monkeypatch, **overrides) -> RuntimeState:
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj"))
-    args = argparse.Namespace(local=True, trust=False, mcp=False, listen=False, deposit=False)
+    monkeypatch.setenv(
+        "RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj")
+    )
+    args = argparse.Namespace(
+        local=True, trust=False, mcp=False, listen=False, deposit=False
+    )
     for key, value in overrides.items():
         setattr(args, key, value)
     writer = _session.SessionWriter(cwd=str(tmp_path))
@@ -48,7 +53,9 @@ def test_shutdown_fires_the_session_end_hook(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     fired = []
     monkeypatch.setattr("ratatosk.crown.index_session", lambda **kw: None)
-    monkeypatch.setattr(state.hooks, "run_event", lambda name, payload: fired.append(name))
+    monkeypatch.setattr(
+        state.hooks, "run_event", lambda name, payload: fired.append(name)
+    )
     _shutdown(state)
     assert fired == ["SessionEnd"]
 
@@ -110,7 +117,9 @@ def test_ctrl_c_mid_turn_still_closes_the_session(tmp_path, monkeypatch, capsys)
     from ratatosk import crown
 
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj"))
+    monkeypatch.setenv(
+        "RATATOSK_SESSION_DIR", str(tmp_path / "ratatosk" / "sessions" / "proj")
+    )
     monkeypatch.setattr("sys.argv", ["ratatosk", "--local"])
 
     prompts = iter(["do the thing", EOFError])
@@ -134,7 +143,9 @@ def test_ctrl_c_mid_turn_still_closes_the_session(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr(crown, "_run_turn", interrupted)
     monkeypatch.setattr(crown, "index_session", lambda **kw: indexed.append(kw))
-    monkeypatch.setattr(crown.HookRuntime, "run_event", lambda self, n, p: fired.append(n))
+    monkeypatch.setattr(
+        crown.HookRuntime, "run_event", lambda self, n, p: fired.append(n)
+    )
 
     crown.main()
 

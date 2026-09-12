@@ -9,6 +9,7 @@ declared public surface, so a pattern written before scopes existed has to
 keep meaning exactly what it meant: an unscoped `Bash` still matches every
 Bash call, and `decide` still returns the first rule that matches.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,7 +62,9 @@ def parse_pattern(pattern: str) -> ParsedPattern:
     found = _SCOPED.match(pattern.strip())
     if found is None:
         return ParsedPattern(name=pattern.strip(), arg=None)
-    return ParsedPattern(name=found.group("name").strip(), arg=found.group("arg").strip())
+    return ParsedPattern(
+        name=found.group("name").strip(), arg=found.group("arg").strip()
+    )
 
 
 def subject_field(tool_name: str) -> str | None:
@@ -113,7 +116,11 @@ def rule_matches(rule: PolicyRule, tool_name: str, inputs: dict | None = None) -
     subject = rule_subject(tool_name, inputs)
     if subject is None:
         return False
-    if tool_name == "Bash" and rule.action == "allow" and not is_simple_command(subject):
+    if (
+        tool_name == "Bash"
+        and rule.action == "allow"
+        and not is_simple_command(subject)
+    ):
         return False
     return fnmatch(subject, parsed.arg or "")
 
@@ -165,7 +172,12 @@ def shadowed_rules(rules: list[PolicyRule]) -> list[ShadowedRule]:
         for earlier_index, earlier in enumerate(rules[:later_index]):
             if _eats(parse_pattern(earlier.pattern), parse_pattern(later.pattern)):
                 found.append(
-                    ShadowedRule(index=later_index, rule=later, by_index=earlier_index, by=earlier)
+                    ShadowedRule(
+                        index=later_index,
+                        rule=later,
+                        by_index=earlier_index,
+                        by=earlier,
+                    )
                 )
                 break
     return found

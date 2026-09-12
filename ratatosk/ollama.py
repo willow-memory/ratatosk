@@ -1,7 +1,7 @@
 """Ollama inference — lazy network imports only inside call paths."""
+
 from __future__ import annotations
 
-import json
 import os
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")

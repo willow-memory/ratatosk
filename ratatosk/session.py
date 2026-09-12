@@ -1,4 +1,5 @@
 """JSONL session writer and tier-0 deposit bundle."""
+
 from __future__ import annotations
 
 import json
@@ -56,7 +57,9 @@ class SessionWriter:
         self.write(self._entry("user", message={"role": "user", "content": text}))
 
     def write_assistant(self, text: str) -> None:
-        self.write(self._entry("assistant", message={"role": "assistant", "content": text}))
+        self.write(
+            self._entry("assistant", message={"role": "assistant", "content": text})
+        )
 
     def write_system(self, text: str) -> None:
         self.write(self._entry("system", message={"role": "system", "content": text}))

@@ -4,13 +4,17 @@ from ratatosk.protocol.envelope import Intent, build_envelope
 
 def test_shell_without_confirm_is_rejected():
     gate = CapabilityGate()
-    env = build_envelope(to="local", prompt="rm -rf /", intent=Intent.SHELL.value, requires_confirm=False)
+    env = build_envelope(
+        to="local", prompt="rm -rf /", intent=Intent.SHELL.value, requires_confirm=False
+    )
     assert gate.classify(env) == ActionResult.REJECTED
 
 
 def test_shell_with_confirm_is_queued():
     gate = CapabilityGate()
-    env = build_envelope(to="local", prompt="ls", intent=Intent.SHELL.value, requires_confirm=True)
+    env = build_envelope(
+        to="local", prompt="ls", intent=Intent.SHELL.value, requires_confirm=True
+    )
     assert gate.classify(env) == ActionResult.QUEUED_CONFIRM
 
 
@@ -25,5 +29,7 @@ def test_wake_executes_without_confirmation():
     gating it behind confirmation like RUN_TASK would mean no seat could ever
     wake unattended."""
     gate = CapabilityGate()
-    env = build_envelope(to="local", prompt="", intent=Intent.WAKE.value, capabilities=[])
+    env = build_envelope(
+        to="local", prompt="", intent=Intent.WAKE.value, capabilities=[]
+    )
     assert gate.classify(env) == ActionResult.EXECUTED

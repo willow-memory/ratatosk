@@ -4,6 +4,7 @@ BusListener refuses an unset channel, and that refusal arrives after
 mcp_client.start() has already spawned the server. Built above the try it
 tracebacked out of main() and left the child process running.
 """
+
 import pytest
 
 from ratatosk import crown, mcp_client
@@ -26,14 +27,20 @@ def fake_mcp(tmp_path, monkeypatch):
     return torn_down
 
 
-def test_unset_channel_refuses_without_orphaning_the_server(fake_mcp, monkeypatch, capsys):
+def test_unset_channel_refuses_without_orphaning_the_server(
+    fake_mcp, monkeypatch, capsys
+):
     monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
 
     with pytest.raises(SystemExit) as exit_info:
         crown.main()
 
-    assert exit_info.value.code == 1, "an unconfigured listener is a failure, not a quiet no-op"
-    assert fake_mcp["called"], "the MCP server must be torn down, not left to process exit"
+    assert exit_info.value.code == 1, (
+        "an unconfigured listener is a failure, not a quiet no-op"
+    )
+    assert fake_mcp["called"], (
+        "the MCP server must be torn down, not left to process exit"
+    )
     out = capsys.readouterr().out
     assert "grove channel unset" in out
     assert "RATATOSK_GROVE_CHANNEL" in out, "an error states the fault and the remedy"

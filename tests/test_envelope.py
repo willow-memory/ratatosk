@@ -1,4 +1,9 @@
-from ratatosk.protocol.envelope import Intent, build_envelope, parse_grove_message, validate_envelope
+from ratatosk.protocol.envelope import (
+    Intent,
+    build_envelope,
+    parse_grove_message,
+    validate_envelope,
+)
 
 
 def test_validate_rejects_wrong_node():
@@ -8,7 +13,9 @@ def test_validate_rejects_wrong_node():
 
 
 def test_parse_addressed_message():
-    env = parse_grove_message({"sender": "willow", "content": "ratatosk: status please"})
+    env = parse_grove_message(
+        {"sender": "willow", "content": "ratatosk: status please"}
+    )
     assert env is not None
     assert env.to == "ratatosk"
     assert "status" in env.prompt
@@ -27,7 +34,11 @@ def test_a_missing_nonce_is_rejected_not_skipped():
 
 
 def test_a_duplicate_nonce_is_still_caught():
-    from ratatosk.protocol.envelope import build_envelope, clear_nonce_cache, validate_envelope
+    from ratatosk.protocol.envelope import (
+        build_envelope,
+        clear_nonce_cache,
+        validate_envelope,
+    )
 
     clear_nonce_cache()
     env = build_envelope(to="ratatosk", prompt="hi", intent=Intent.CHAT.value)
