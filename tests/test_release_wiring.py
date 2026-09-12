@@ -533,3 +533,175 @@ def test_the_permissions_check_catches_a_planted_workflow_with_no_grant():
         "    permissions:\n      id-token: write\n  b:\n    runs-on: ubuntu-latest\n"
     )
     assert _jobs_without_permissions(per_job) == ["b"]
+
+
+# ── the fleet CI floor (decision 5, C4-tests-yml) ───────────────────────────
+
+_CLASSIFIER = re.compile(r"^Programming Language :: Python :: (3\.\d+)$")
+_RUFF_PIN = re.compile(r"pip install ruff==(\d+\.\d+\.\d+)\b")
+_GATE_JOB = "test"
+
+
+def _classifier_minors(pyproject_text: str) -> list[str]:
+    """Every `Programming Language :: Python :: 3.X` classifier, in order.
+    The Linux matrix is derived from these, and this is the derivation."""
+    classifiers = tomllib.loads(pyproject_text)["project"].get("classifiers", [])
+    return [m.group(1) for c in classifiers if (m := _CLASSIFIER.match(c))]
+
+
+def _matrix_versions(workflow: dict, job: str) -> list[str]:
+    return [
+        str(v) for v in workflow["jobs"][job]["strategy"]["matrix"]["python-version"]
+    ]
+
+
+def _floor_and_ceiling(versions: list[str]) -> list[str]:
+    ordered = sorted(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
+    return [ordered[0], ordered[-1]]
+
+
+def test_the_linux_matrix_is_exactly_the_classifiers_and_windows_is_its_floor_and_ceiling():
+    minors = _classifier_minors((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert minors, (
+        "pyproject declares no Python classifiers; declare them, the matrix derives from them"
+    )
+    workflow = _yaml(_TESTS_WF)
+    assert _matrix_versions(workflow, "test-matrix") == minors, (
+        f"tests.yml's Linux matrix {_matrix_versions(workflow, 'test-matrix')} is not "
+        f"pyproject's classifier list {minors}"
+    )
+    assert _matrix_versions(workflow, "test-windows") == _floor_and_ceiling(minors)
+
+
+def test_the_matrix_check_catches_a_planted_classifier_the_matrix_does_not_run():
+    """Planted: pyproject grows a 3.15 classifier and the workflow is not
+    touched — the matrix must be reported stale, not silently narrower."""
+    pyproject = (
+        '[project]\nclassifiers = ["Programming Language :: Python :: 3",\n'
+        ' "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.15"]\n'
+    )
+    minors = _classifier_minors(pyproject)
+    assert minors == ["3.12", "3.15"], "the bare `:: 3` classifier is not a minor"
+    workflow = {
+        "jobs": {"test-matrix": {"strategy": {"matrix": {"python-version": ["3.12"]}}}}
+    }
+    assert _matrix_versions(workflow, "test-matrix") != minors
+    assert _floor_and_ceiling(["3.11", "3.9", "3.10"]) == ["3.9", "3.11"], (
+        "numeric, not lexical"
+    )
+
+
+def _ruff_pin(workflow_text: str) -> str | None:
+    """The exact ruff version the lint leg installs, or None when it floats."""
+    m = _RUFF_PIN.search(workflow_text)
+    return m.group(1) if m else None
+
+
+def test_the_lint_leg_pins_ruff_to_an_exact_version():
+    assert _ruff_pin(_TESTS_WF.read_text(encoding="utf-8")) is not None, (
+        "the lint leg must `pip install ruff==X.Y.Z`; a floating linter changes its rules under you"
+    )
+
+
+def test_the_pin_check_catches_a_planted_floating_ruff():
+    """Planted: the three spellings that look pinned and are not."""
+    assert _ruff_pin("run: pip install ruff\n") is None
+    assert _ruff_pin("run: pip install ruff>=0.16\n") is None
+    assert _ruff_pin("run: pip install ruff~=0.16.7\n") is None
+    assert _ruff_pin("run: pip install ruff==0.16.7\n") == "0.16.7"
+
+
+def _gate_defects(workflow: dict) -> list[str]:
+    """Everything wrong with the aggregate gate, as a list of reasons; empty
+    when it needs every other job, always runs, and rejects every result but
+    `success` for each of them, by name, in its own script."""
+    jobs = workflow["jobs"]
+    if _GATE_JOB not in jobs:
+        return [f"no job named {_GATE_JOB!r}"]
+    gate = jobs[_GATE_JOB]
+    defects: list[str] = []
+    legs = sorted(name for name in jobs if name != _GATE_JOB)
+    needs = gate.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    for missing in sorted(set(legs) - set(needs)):
+        defects.append(f"gate does not need {missing!r}")
+    if str(gate.get("if", "")).strip() not in ("always()", "${{ always() }}"):
+        defects.append(
+            "gate is not `if: always()`, so a failed leg skips it and the check never reports"
+        )
+    body = "\n".join(str(s.get("run", "")) for s in gate.get("steps", []))
+    for leg in needs:
+        if not re.search(
+            rf"needs\.{re.escape(leg)}\.result\s*}}}}\"?\s*!=\s*['\"]success['\"]", body
+        ):
+            defects.append(
+                f"gate does not reject every non-success result of {leg!r} "
+                "(skipped and cancelled must fail it, not only failure)"
+            )
+    if "exit 1" not in body:
+        defects.append("gate never exits non-zero")
+    return defects
+
+
+def test_the_aggregate_gate_needs_every_leg_and_rejects_anything_but_success():
+    assert _gate_defects(_yaml(_TESTS_WF)) == []
+
+
+def test_the_gate_check_catches_a_planted_gate_that_forgets_a_leg_or_passes_skipped():
+    """Planted: a gate that needs only the Linux matrix, and one that checks
+    for `failure` alone — the second passes a Windows leg that never ran."""
+    forgetful = {
+        "jobs": {
+            "test-matrix": {},
+            "test-windows": {},
+            "lint": {},
+            "test": {
+                "needs": ["test-matrix"],
+                "if": "always()",
+                "steps": [
+                    {
+                        "run": 'if [ "${{ needs.test-matrix.result }}" != "success" ]; then exit 1; fi'
+                    }
+                ],
+            },
+        }
+    }
+    defects = _gate_defects(forgetful)
+    assert (
+        "gate does not need 'lint'" in defects
+        and "gate does not need 'test-windows'" in defects
+    )
+    lenient = {
+        "jobs": {
+            "test-matrix": {},
+            "test-windows": {},
+            "test": {
+                "needs": ["test-matrix", "test-windows"],
+                "if": "always()",
+                "steps": [
+                    {
+                        "run": 'if [ "${{ needs.test-matrix.result }}" != "success" ]; then exit 1; fi\n'
+                        'if [ "${{ needs.test-windows.result }}" == "failure" ]; then exit 1; fi'
+                    }
+                ],
+            },
+        }
+    }
+    assert [d for d in _gate_defects(lenient) if "test-windows" in d], (
+        "== failure lets skipped through"
+    )
+    no_always = {
+        "jobs": {
+            "a": {},
+            "test": {
+                "needs": ["a"],
+                "steps": [
+                    {
+                        "run": 'if [ "${{ needs.a.result }}" != "success" ]; then exit 1; fi'
+                    }
+                ],
+            },
+        }
+    }
+    assert any("always()" in d for d in _gate_defects(no_always))
+    assert _gate_defects({"jobs": {"a": {}}}) == ["no job named 'test'"]
