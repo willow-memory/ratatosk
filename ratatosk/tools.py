@@ -300,9 +300,29 @@ def _run_bash(argv: list[str]) -> str:
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill the child and everything it spawned.
+
+    POSIX: the child was started in its own session (`start_new_session`), so
+    its process group is exactly its tree — SIGTERM the group, then SIGKILL
+    whatever ignored it. Windows has no process group to signal and
+    `start_new_session` is a no-op there, so the tree is walked by
+    `taskkill /T`, which ends the child and its descendants together;
+    `proc.kill()` after it covers a `taskkill` that is missing or refused.
+    """
     import os
     import signal
 
+    if os.name != "posix":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):

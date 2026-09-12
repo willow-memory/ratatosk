@@ -54,6 +54,26 @@ PASSTHROUGH: tuple[str, ...] = (
     "RATATOSK_APP_ID",
     "RATATOSK_GROVE_CHANNEL",
     "RATATOSK_SESSION_DIR",
+    # Windows. Without SYSTEMROOT a child Python cannot bring up its own
+    # runtime (socket and crypto initialisation fail with WinError 10106);
+    # without COMSPEC and PATHEXT nothing resolves; the rest are the profile
+    # a child expects to find. Paths and names, not credentials.
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "USERNAME",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
 )
 
 #: Names that never reach a child even if they somehow match the allowlist.
