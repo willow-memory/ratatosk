@@ -16,12 +16,20 @@ test-matrix jobs started at 06:33:45.
 
 Ported from kartikeya's file of the same name. Checks that do not apply here are
 deliberately absent rather than copied: this repo has no changelog-rebuild step,
-no release-body sync, no pr-title workflow, and no second file storing a version.
-The two checks that are *new* here — the arming step reporting its failure, and
-the required check naming a job that exists — are this repo's own scar.
+no release-body sync, and no second file storing a version. The two checks that
+are *new* here — the arming step reporting its failure, and the required check
+naming a job that exists — are this repo's own scar.
+
+The pr-title checks at the bottom arrived with the workflow itself (fleet plan
+Wave 2, G2-pr-title): because release-please.yml arms auto-merge, a PR *title*
+of a release-cutting type would tag and publish unattended, and the file that
+stops it is one this test asserts is present, wired to the packaged directory
+pyproject actually names, and backed by a config whose hidden set is the
+fleet's and whose reasoning is written beside it.
 """
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import re
@@ -218,3 +226,137 @@ def test_this_package_is_past_1_0_so_the_pre_major_flags_are_inert():
     for flag in ("bump-minor-pre-major", "bump-patch-for-minor-pre-major"):
         assert cfg.get(flag) is False, \
             f"{flag} should stay false: inert now, correct if this ever forks a 0.x line"
+
+
+# ── the pr-title guard (G2-pr-title) ───────────────────────────────────────
+
+_PR_TITLE_WF = ".github/workflows/pr-title.yml"
+
+#: What arming looks like in release-please.yml. The guard is required
+#: *because* of this line: without it the release PR waits for a human, who
+#: sees the title before merging it.
+_ARMS_AUTOMERGE = "gh pr merge --auto"
+
+#: The types that must be hidden — the fleet's set, restated here only so a
+#: disagreement with `tests/fleet_conventions.json` is a test failure in two
+#: places rather than a silent drift in one.
+_HIDDEN = frozenset({"chore", "ci", "docs", "test"})
+
+_REQUIRED_COMMENTS = ("$comment-hidden-rule", "$comment-what-cuts-a-release")
+
+
+def _arms_automerge(root: Path) -> bool:
+    workflow = root / ".github" / "workflows" / "release-please.yml"
+    return workflow.exists() and _ARMS_AUTOMERGE in workflow.read_text(encoding="utf-8")
+
+
+def _guard_missing_when_armed(root: Path) -> bool:
+    """True when this tree arms auto-merge on the release PR and carries no
+    pr-title workflow — the exact state willow-mcp was in for v2.1.1."""
+    return _arms_automerge(root) and not (root / _PR_TITLE_WF).exists()
+
+
+def test_the_pr_title_guard_is_present_because_auto_merge_is_armed():
+    assert _arms_automerge(_REPO), \
+        "release-please.yml no longer arms auto-merge; re-read whether the guard is still required"
+    assert not _guard_missing_when_armed(_REPO), \
+        f"{_PR_TITLE_WF} is missing: a release-cutting PR title would publish unattended"
+
+
+def _tree(tmp_path: Path, label: str, *, arms: bool, guard: bool) -> Path:
+    root = tmp_path / label
+    (root / ".github" / "workflows").mkdir(parents=True)
+    line = f"{_ARMS_AUTOMERGE} --merge \"$pr\"" if arms else "gh pr list"
+    (root / ".github" / "workflows" / "release-please.yml").write_text(
+        f"jobs:\n  release-please:\n    steps:\n      - run: |\n          {line}\n",
+        encoding="utf-8")
+    if guard:
+        (root / _PR_TITLE_WF).write_text("name: PR title\n", encoding="utf-8")
+    return root
+
+
+def test_the_guard_check_fires_on_a_planted_tree_that_arms_without_the_guard(tmp_path):
+    """Planted: three trees. Armed and unguarded must be reported; armed and
+    guarded must not; unarmed and unguarded must not, because a hand-merged
+    release PR is read by a human before it lands."""
+    assert _guard_missing_when_armed(_tree(tmp_path, "bare", arms=True, guard=False))
+    assert not _guard_missing_when_armed(_tree(tmp_path, "guarded", arms=True, guard=True))
+    assert not _guard_missing_when_armed(_tree(tmp_path, "manual", arms=False, guard=False))
+
+
+_PACKAGED_LINE = re.compile(r"^\s*PACKAGED\s*=\s*(\(.*\))\s*$", re.MULTILINE)
+
+
+def _packaged_constant(workflow_text: str) -> tuple[str, ...]:
+    """The `PACKAGED` tuple the pr-title workflow's inline script declares —
+    the one per-repo constant in an otherwise fleet-identical file."""
+    m = _PACKAGED_LINE.search(workflow_text)
+    assert m, "pr-title.yml declares no PACKAGED constant"
+    value = ast.literal_eval(m.group(1))
+    assert isinstance(value, tuple) and all(isinstance(v, str) for v in value)
+    return value
+
+
+def _packaged_by_pyproject(pyproject_text: str) -> tuple[str, ...]:
+    """What pyproject says is installable: each wheel package as a directory
+    prefix, plus pyproject.toml itself, since a dependency change there alters
+    the installed artifact."""
+    packages = tomllib.loads(pyproject_text)["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    return tuple(f"{pkg.rstrip('/')}/" for pkg in packages) + ("pyproject.toml",)
+
+
+def _packaged_disagreement(workflow_text: str, pyproject_text: str) -> set[str]:
+    """The symmetric difference between the two — empty when they agree."""
+    return set(_packaged_constant(workflow_text)) ^ set(_packaged_by_pyproject(pyproject_text))
+
+
+def test_the_workflows_packaged_constant_agrees_with_pyproject():
+    """The fleet's rule: PACKAGED is the one line that must not be copied
+    between repos. This is the test the workflow's own comment promises."""
+    disagreement = _packaged_disagreement(
+        (_REPO / _PR_TITLE_WF).read_text(encoding="utf-8"),
+        (_REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert not disagreement, \
+        f"pr-title.yml's PACKAGED and pyproject's wheel packages disagree on: {sorted(disagreement)}"
+
+
+def test_the_packaged_check_catches_a_planted_constant_copied_from_kartikeya():
+    """Planted: the workflow as it would be if copied without editing the
+    constant — kartikeya's `src/kartikeya/` against this repo's pyproject."""
+    copied = '          PACKAGED = ("src/kartikeya/", "pyproject.toml")\n'
+    pyproject = '[tool.hatch.build.targets.wheel]\npackages = ["ratatosk"]\n'
+    assert _packaged_disagreement(copied, pyproject) == {"src/kartikeya/", "ratatosk/"}
+    ours = '          PACKAGED = ("ratatosk/", "pyproject.toml")\n'
+    assert _packaged_disagreement(ours, pyproject) == set()
+
+
+def _hidden_types(config_text: str) -> frozenset[str]:
+    sections = json.loads(config_text)["packages"]["."]["changelog-sections"]
+    return frozenset(s["type"] for s in sections if s.get("hidden"))
+
+
+def _missing_comments(config_text: str) -> list[str]:
+    package = json.loads(config_text)["packages"]["."]
+    return [c for c in _REQUIRED_COMMENTS if c not in package]
+
+
+def test_the_hidden_set_is_the_fleets_and_its_reasoning_is_beside_it():
+    text = _CONFIG.read_text(encoding="utf-8")
+    assert _hidden_types(text) == _HIDDEN, \
+        f"hidden set drifted from the fleet's {sorted(_HIDDEN)}: {sorted(_hidden_types(text))}"
+    assert _missing_comments(text) == [], \
+        "the hidden set may not be edited without reading why it is what it is"
+
+
+def test_the_hidden_set_check_catches_a_planted_config_that_unhides_ci():
+    """Planted: `ci` without `hidden: true`, and the reasoning comment gone —
+    jeles v0.4.1, as a config file."""
+    planted = json.dumps({"packages": {".": {"changelog-sections": [
+        {"type": "feat", "section": "Added"},
+        {"type": "docs", "section": "Docs", "hidden": True},
+        {"type": "test", "section": "Tests", "hidden": True},
+        {"type": "ci", "section": "CI"},
+        {"type": "chore", "section": "Chores", "hidden": True},
+    ], "$comment-what-cuts-a-release": "kept"}}})
+    assert _hidden_types(planted) == {"chore", "docs", "test"}
+    assert _missing_comments(planted) == ["$comment-hidden-rule"]
