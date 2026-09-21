@@ -25,8 +25,8 @@ hide the misconfiguration behind whichever rung happened to work.
 
 from __future__ import annotations
 
+import contextlib
 import json
-import socket
 import time
 import urllib.error
 import urllib.request
@@ -279,10 +279,11 @@ class OpenAICompatibleClient:
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             body = ""
-            try:
+            # An error body that cannot be read is still an error with a
+            # status; the status classifies and the reason falls back to
+            # urllib's own. Nothing to log — the receipt carries the outcome.
+            with contextlib.suppress(Exception):
                 body = exc.read().decode("utf-8", "replace")[:500]
-            except Exception:
-                pass
             retryable, kind = _classify_http(exc.code, body)
             # A provider's error body can echo the key it rejected
             # ("Incorrect API key provided: sk-…"); this string reaches the
@@ -293,7 +294,7 @@ class OpenAICompatibleClient:
                 status=exc.code,
                 kind=kind,
             ) from None
-        except (TimeoutError, socket.timeout) as exc:
+        except TimeoutError as exc:  # socket.timeout is this alias since 3.10
             raise ProviderError(
                 f"timeout after {self.timeout}s at {self.base_url}",
                 retryable=True,
@@ -301,7 +302,7 @@ class OpenAICompatibleClient:
             ) from exc
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
-            if isinstance(reason, (TimeoutError, socket.timeout)):
+            if isinstance(reason, TimeoutError):
                 raise ProviderError(
                     f"timeout after {self.timeout}s at {self.base_url}",
                     retryable=True,

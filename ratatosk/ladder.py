@@ -18,7 +18,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 LADDER_PATH = Path(__file__).parent / "provider_ladder.json"
@@ -141,7 +141,9 @@ class Ladder:
         that last question in the caller's favour, never the first three.
         """
         env = os.environ if env is None else env
-        today = today or date.today()
+        # UTC, not the box's wall clock: verify_at is a date the operator
+        # wrote, and a staleness edge should not move with the timezone.
+        today = today or datetime.now(timezone.utc).date()
         if rung.dialect not in DIALECTS:
             return RungVerdict(
                 rung,
@@ -263,8 +265,12 @@ def _date(value, *, where: str) -> date | None:
         # ``"issued": "pre-2026-09-20"`` is an honest ``issued``; a ``verify_at``
         # must be a real date — the staleness rule cannot subtract from "pre-".
         raise LadderError(f"{where}: verify_at {value!r} is not a date")
+    # Exactly YYYY-MM-DD: fromisoformat would also take "20260920", which is
+    # not the shape the file promises.
+    if len(value) != 10 or value[4] != "-" or value[7] != "-":
+        raise LadderError(f"{where}: verify_at {value!r} is not YYYY-MM-DD")
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
+        return date.fromisoformat(value)
     except ValueError:
         raise LadderError(f"{where}: verify_at {value!r} is not YYYY-MM-DD") from None
 

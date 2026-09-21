@@ -2,7 +2,6 @@
 
 import io
 import json
-import socket
 import urllib.error
 
 import pytest
@@ -215,7 +214,7 @@ def test_http_errors_are_classified_weather_or_defect(
 
 def test_a_timeout_is_retryable(monkeypatch):
     def fake_urlopen(req, timeout=None):
-        raise socket.timeout("timed out")
+        raise TimeoutError("timed out")
 
     monkeypatch.setattr(providers.urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(ProviderError) as info:
