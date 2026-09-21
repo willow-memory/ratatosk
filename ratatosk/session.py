@@ -64,6 +64,12 @@ class SessionWriter:
     def write_system(self, text: str) -> None:
         self.write(self._entry("system", message={"role": "system", "content": text}))
 
+    def write_receipt(self, receipt: dict) -> None:
+        """A model-call receipt (ratatosk.inference.TurnReceipt) as its own
+        entry type — provider/model/rung/tokens per call, distinct from the
+        conversation so a reader can total them without parsing prose."""
+        self.write(self._entry("receipt", receipt=receipt))
+
     def read_entries(self) -> list[dict]:
         if not self.path.exists():
             return []
