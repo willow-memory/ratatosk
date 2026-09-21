@@ -9,6 +9,7 @@ run_forever actually honors.
 """
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -416,6 +417,11 @@ def test_heartbeat_still_fires_when_the_ledger_is_quiet(tmp_path):
 # test_seat.py's FakeMCP) and a fake inference/ladder (SimpleNamespace or a
 # real Ladder with a stub client), never a real provider or a real
 # willow-mcp process.
+#
+# Loki 3564BE3C (rework 45707360, packet 75575CB7's audit) found 8 findings
+# against the first cut; each one below is named where it is addressed —
+# `tests/test_loki_probe_wake.py`'s probes (which proved the BUGS existed)
+# are folded in here under these names, asserting the FIXED behavior instead.
 
 PERSONA = "You are Hanuman — Builder.\n\n*ΔΣ=42*\n"
 
@@ -435,6 +441,19 @@ def _entered(**overrides) -> dict:
     }
     result.update(overrides)
     return result
+
+
+#: The broker's real `handoff_write_v4` answer (willow-mcp handoff.py) — no
+#: id/path/continuity_key field at all. Loki F1: a prior test faked a
+#: `handoff_id` key the broker never emits; every wake test below uses this
+#: shape instead, so a receipt line built against it proves what actually
+#: reaches the broker.
+_BROKER_HANDOFF_ANSWER = {
+    "dispatch_id": "PKT00001",
+    "status": "complete",
+    "reply_to": "willow",
+    "waiting_for": "verify_handoff",
+}
 
 
 class _FakeMCP:
@@ -466,6 +485,35 @@ def _fake_inference(complete):
         resolution=SimpleNamespace(usable=[SimpleNamespace(model="fake-model")]),
         complete=complete,
     )
+
+
+def _isolate(monkeypatch, tmp_path):
+    """WILLOW_HOME too, not only RATATOSK_SESSION_DIR — Loki F8: three tests
+    in the first cut wrote `$WILLOW_HOME/ratatosk/traces.jsonl` against the
+    live store because only the session dir was isolated. Every wake test
+    below isolates both."""
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    monkeypatch.delenv("WILLOW_HUMAN_ORCHESTRATOR", raising=False)
+
+
+def _done(**overrides) -> Completion:
+    kw = dict(
+        blocks=[{"type": "text", "text": "done"}],
+        text="done",
+        tokens_in=1,
+        tokens_out=1,
+        latency_ms=1,
+    )
+    kw.update(overrides)
+    return Completion(**kw)
+
+
+def _receipt_ok() -> SimpleNamespace:
+    r = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
+    r.provider, r.model, r.tokens_in, r.tokens_out, r.outcome = "f", "m", 1, 1, "ok"
+    return r
 
 
 def test_run_wake_refuses_with_no_dispatch_id_and_never_enters():
@@ -502,31 +550,16 @@ def test_run_wake_names_the_brokers_entry_refusal():
 def test_run_wake_happy_path_enters_runs_closes_and_inks_a_receipt_line(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
-    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
-    done = Completion(
-        blocks=[{"type": "text", "text": "done"}],
-        text="done",
-        tokens_in=100,
-        tokens_out=20,
-        latency_ms=12,
-        raw_model="fake-model",
-    )
-    receipt = SimpleNamespace(
-        rung="rung1",
-        line=lambda: "[ratatosk] turn ok class=build rung=rung1 fake/fake-model",
-    )
-    receipt.provider = "fake"
-    receipt.model = "fake-model"
-    receipt.tokens_in = 100
-    receipt.tokens_out = 20
-    receipt.outcome = "ok"
+    _isolate(monkeypatch, tmp_path)
+    done = _done(tokens_in=100, tokens_out=20, latency_ms=12, raw_model="fake-model")
+    receipt = _receipt_ok()
+    receipt.line = lambda: "[ratatosk] turn ok class=build rung=rung1 fake/fake-model"
     inference = _fake_inference(lambda *a, **k: (done, receipt))
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
             "dispatch_read": {"meta": {"role": "build-work-order"}},
-            "handoff_write_v4": {"handoff_id": "H1"},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
 
@@ -541,7 +574,9 @@ def test_run_wake_happy_path_enters_runs_closes_and_inks_a_receipt_line(
     assert line.startswith("[ratatosk] wake receipt")
     assert "dispatch=PKT00001" in line
     assert "app=hanuman" in line
-    assert "handoff=H1" in line
+    # F1: names the broker's actual "status" answer, not the literal "ok".
+    assert "handoff=complete" in line
+    assert "handoff=ok " not in line
     assert "class=build" in line
     assert "outcome=ok" in line
     (enter,) = mcp.named("session_enter")
@@ -556,11 +591,10 @@ def test_run_wake_happy_path_enters_runs_closes_and_inks_a_receipt_line(
 def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
     """A ladder that only ever calls tools (never a final answer) is refused
     by name at the turn cap, not stretched — and still closes and inks."""
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
-    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
-    monkeypatch.setattr(
-        crown._tools, "prompt_and_dispatch", lambda *a, **kw: "tool result"
-    )
+    _isolate(monkeypatch, tmp_path)
+    # non_interactive routes tool dispatch through _tools.dispatch, not
+    # prompt_and_dispatch (see F2 below) — stub the one actually called.
+    monkeypatch.setattr(crown._tools, "dispatch", lambda *a, **kw: "tool result")
     tool_use = {"id": "t1", "name": "Read", "input": {"file_path": "/x"}}
     calling = Completion(
         blocks=[{"type": "tool_use", **tool_use}],
@@ -569,13 +603,12 @@ def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
         tokens_out=1,
         latency_ms=1,
     )
-    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
-    inference = _fake_inference(lambda *a, **k: (calling, receipt))
+    inference = _fake_inference(lambda *a, **k: (calling, _receipt_ok()))
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
             "dispatch_read": {"meta": {"role": "build-work-order"}},
-            "handoff_write_v4": {"handoff_id": "H2"},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
 
@@ -590,11 +623,16 @@ def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
 
     assert "outcome=budget_turns" in line
     assert mcp.named("handoff_write_v4"), "still closes on a budget refusal"
+    # F7: the closeout's own narrative/findings must say how it ended, not
+    # just the returned receipt line — checked at the seat.py level in
+    # test_seat.py; here just confirm the transcript carries the notice
+    # summarize() reads.
+    (close,) = mcp.named("handoff_write_v4")
+    assert "turn cap" in close["narrative"]
 
 
-def test_run_wake_refuses_on_the_wall_clock_budget(tmp_path, monkeypatch):
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
-    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+def test_run_wake_refuses_on_the_wall_clock_budget_between_calls(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
 
     def _never_called(*_a, **_kw):
         raise AssertionError("inference.complete must not run past the deadline")
@@ -604,7 +642,7 @@ def test_run_wake_refuses_on_the_wall_clock_budget(tmp_path, monkeypatch):
         {
             "session_enter": _entered(),
             "dispatch_read": {"meta": {"role": "build-work-order"}},
-            "handoff_write_v4": {"handoff_id": "H3"},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
 
@@ -621,23 +659,56 @@ def test_run_wake_refuses_on_the_wall_clock_budget(tmp_path, monkeypatch):
     assert mcp.named("handoff_write_v4")
 
 
-def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
-    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
-    done = Completion(
-        blocks=[{"type": "text", "text": "done"}],
-        text="done",
-        tokens_in=1,
-        tokens_out=1,
-        latency_ms=1,
+def test_run_wake_reports_the_wall_clock_budget_even_when_one_call_overruns_it(
+    tmp_path, monkeypatch
+):
+    """F4 (Loki 3564BE3C, folded from test_loki_probe_wake.py's
+    test_probe_wall_clock_does_not_bound_a_single_call): the deadline used to
+    be checked only BETWEEN calls, so one slow call that itself overran the
+    whole budget and still ended in a final answer reported outcome=ok. Now
+    it is checked again right after the call returns too."""
+    _isolate(monkeypatch, tmp_path)
+    calls = []
+
+    def slow_complete(*a, **k):
+        calls.append(time.monotonic())
+        time.sleep(0.05)
+        return _done(), _receipt_ok()
+
+    inference = _fake_inference(slow_complete)
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
     )
-    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
-    inference = _fake_inference(lambda *a, **k: (done, receipt))
+    started = time.monotonic()
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-7b",
+        inference=inference,
+        wall_clock_seconds=0.01,
+    )
+
+    elapsed = time.monotonic() - started
+    assert len(calls) == 1, "one call still had to run to completion — it cannot be preempted"
+    assert elapsed >= 0.05 > 0.01
+    assert "outcome=budget_seconds" in line, "the overrun is reported, not silently ok"
+    assert "outcome=ok" not in line
+
+
+def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
+    inference = _fake_inference(lambda *a, **k: (_done(), _receipt_ok()))
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
             "dispatch_read": {"meta": {"role": "some-unmapped-role"}},
-            "handoff_write_v4": {"handoff_id": "H4"},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
     line = crown.run_wake(
@@ -650,23 +721,32 @@ def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
     assert "class=chat" in line
 
 
-def test_run_wake_calls_on_heartbeat_once_after_the_turn_loop(tmp_path, monkeypatch):
-    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
-    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
-    done = Completion(
-        blocks=[{"type": "text", "text": "done"}],
-        text="done",
-        tokens_in=1,
-        tokens_out=1,
+def test_run_wake_fires_a_heartbeat_during_a_multi_turn_wake_not_only_after(
+    tmp_path, monkeypatch
+):
+    """F5 (Loki 3564BE3C): on_heartbeat used to fire exactly once, after the
+    whole turn loop — up to the wall-clock budget (minutes) dark on a
+    30s-interval heartbeat. Drive several tool-calling iterations with a
+    tiny heartbeat_interval and prove a heartbeat lands BEFORE the loop
+    ends, not only after."""
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(crown._tools, "dispatch", lambda *a, **k: "r")
+    tool_use = {"id": "t1", "name": "Read", "input": {"file_path": "/x"}}
+    calling = Completion(
+        blocks=[{"type": "tool_use", **tool_use}], text="", tokens_in=1, tokens_out=1,
         latency_ms=1,
     )
-    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
-    inference = _fake_inference(lambda *a, **k: (done, receipt))
+
+    def slow_complete(*a, **k):
+        time.sleep(0.02)
+        return calling, _receipt_ok()
+
+    inference = _fake_inference(slow_complete)
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
             "dispatch_read": {"meta": {"role": "build-work-order"}},
-            "handoff_write_v4": {"handoff_id": "H5"},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
     beats = []
@@ -676,9 +756,130 @@ def test_run_wake_calls_on_heartbeat_once_after_the_turn_loop(tmp_path, monkeypa
         dispatch_id="PKT00001",
         trace_id="tr-9",
         inference=inference,
-        on_heartbeat=lambda: beats.append(1),
+        max_turns=5,
+        on_heartbeat=lambda: beats.append(time.monotonic()),
+        heartbeat_interval=0.01,
     )
-    assert beats == [1]
+    # At least one beat from inside the loop (before the final call-after
+    # beat run_wake still fires as a courtesy) — more than the single
+    # "after the loop" beat the old code produced.
+    assert len(beats) >= 2
+
+
+def test_wake_tool_confirm_verdict_is_refused_not_prompted_on_stdin(
+    tmp_path, monkeypatch
+):
+    """F2 (Loki 3564BE3C, folded from test_loki_probe_wake.py's
+    test_probe_wake_tool_call_reaches_interactive_input): PolicyStore's
+    default Bash/Write/Edit -> confirm rules survive trust=True; a wake has
+    no human at the keyboard by definition, so a CONFIRM verdict must be
+    refused by name, never prompted on stdin."""
+    _isolate(monkeypatch, tmp_path)
+    import builtins
+
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        raise AssertionError("run_wake must never call input()")
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    tool_use = {"id": "t1", "name": "Bash", "input": {"command": "true"}}
+    calling = Completion(
+        blocks=[{"type": "tool_use", **tool_use}], text="", tokens_in=1, tokens_out=1,
+        latency_ms=1,
+    )
+    inference = _fake_inference(lambda *a, **k: (calling, _receipt_ok()))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=2,
+    )
+
+    assert prompts == [], "input() was never reached"
+    assert "outcome=budget_turns" in line
+    # PolicyStore() still wrote its default rules under the isolated
+    # WILLOW_HOME — proves the confirm verdict was real, not skipped.
+    policy = tmp_path / "ratatosk" / "policy.json"
+    assert policy.exists()
+    rules = json.loads(policy.read_text())["rules"]
+    assert {r["pattern"]: r["action"] for r in rules} == {
+        "Bash": "confirm",
+        "Write": "confirm",
+        "Edit": "confirm",
+    }
+
+
+def test_wake_exception_after_entry_still_closes_and_never_raises(tmp_path, monkeypatch):
+    """F3 (Loki 3564BE3C, folded from test_loki_probe_wake.py's
+    test_probe_exception_after_enter_never_closes): a defect anywhere
+    between seat.enter and the turn loop used to leave the packet `working`
+    forever, with no closeout and no receipt. Now it still closes — with a
+    'crashed' outcome — and run_wake never raises."""
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        crown, "_load_system_prompt", lambda: (_ for _ in ()).throw(OSError("boom"))
+    )
+    inference = _fake_inference(lambda *a, **k: (_done(), _receipt_ok()))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+
+    line = crown.run_wake(  # must not raise
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+    )
+
+    assert mcp.named("session_enter"), "entered"
+    assert mcp.named("handoff_write_v4"), "closed despite the mid-setup crash"
+    assert "outcome=crashed" in line
+
+
+def test_wake_envelope_app_id_never_overrides_the_daemons_own_seat(monkeypatch):
+    """F6 (Loki 3564BE3C, folded from test_loki_probe_wake.py's
+    test_probe_envelope_app_id_overrides_daemon_seat): a WAKE's
+    extra.app_id used to pick which seat the daemon entered as, with no
+    sender check — any poster on the channel could redirect the daemon's
+    identity. The daemon's crown_app_id is fixed at process start and wins
+    no matter what the envelope's JSON carries."""
+    captured = {}
+    monkeypatch.setattr(
+        crown, "run_wake", lambda mcp_call, **kw: captured.update(kw) or "line"
+    )
+    daemon = SeatDaemon(
+        node="ratatosk", channel="fleet", mcp_call=lambda n, i: {}, crown_app_id="hanuman"
+    )
+
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(
+        to="ratatosk",
+        prompt="p",
+        intent="wake",
+        capabilities=[],
+        extra={"dispatch_id": "PKT1", "app_id": "loki"},
+    )
+    daemon._crown_activate(env)
+
+    assert captured["app_id"] == "hanuman", "never the envelope's extra.app_id"
 
 
 # -- SeatDaemon wiring: crown_app_id, busy guard ----------------------------

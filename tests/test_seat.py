@@ -464,6 +464,95 @@ def test_summarize_rolls_the_transcript_up(tmp_path, monkeypatch):
     assert summary["tokens_in"] == 100 and summary["tokens_out"] == 20
     assert summary["next_bite"] == "next: open the PR"
     assert summary["tools"] == {"store_get": 1, "willow_web_search": 2}
+    assert summary["notices"] == []
+
+
+# -- Loki 3564BE3C F7: the closeout must say how a wake ENDED --------------
+#
+# summarize() used to ignore `system` rows entirely, so a budget refusal, a
+# ladder refusal, a non-interactive confirm refusal, or a wake crash — every
+# one of them recorded via `write_system` — left no trace in the handoff.
+# An "ok" run and a turn-cap refusal produced the same narrative shape.
+
+
+def test_summarize_collects_system_notices_in_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    writer = _session.SessionWriter(cwd=str(tmp_path))
+    writer.write_user("work the packet")
+    writer.write_system("[budget] turn cap reached (2) — refusing, not stretching")
+    writer.write_system("[wake crashed] OSError: boom")
+    summary = _seat.summarize(writer.read_entries())
+    assert summary["notices"] == [
+        "[budget] turn cap reached (2) — refusing, not stretching",
+        "[wake crashed] OSError: boom",
+    ]
+
+
+def test_build_findings_surfaces_the_notices_as_their_own_finding(tmp_path, monkeypatch):
+    writer = _transcript(tmp_path, monkeypatch)
+    writer.write_system("[budget] turn cap reached (2) — refusing, not stretching")
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    summary = _seat.summarize(writer.read_entries())
+    findings = _seat.build_findings(summary, entry, str(writer.path))
+    (ending,) = [f for f in findings if f["title"] == "how the session ended"]
+    assert ending["evidence"] == [
+        "[budget] turn cap reached (2) — refusing, not stretching"
+    ]
+
+
+def test_narrative_names_the_last_notice_when_the_session_did_not_end_cleanly(
+    tmp_path, monkeypatch
+):
+    writer = _transcript(tmp_path, monkeypatch)
+    writer.write_system("[budget] turn cap reached (2) — refusing, not stretching")
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    summary = _seat.summarize(writer.read_entries())
+    text = _seat.narrative(summary, entry)
+    assert "Ended: [budget] turn cap reached (2)" in text
+
+
+def test_narrative_omits_the_ended_clause_when_there_are_no_notices(tmp_path, monkeypatch):
+    writer = _transcript(tmp_path, monkeypatch)
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    summary = _seat.summarize(writer.read_entries())
+    assert "Ended:" not in _seat.narrative(summary, entry)
+
+
+# -- Loki 3564BE3C F1: the receipt names what the broker actually returned -
+
+
+def test_closed_receipt_falls_back_to_the_brokers_status_before_the_literal_ok():
+    """The real handoff_write_v4 answer (willow-mcp handoff.py) is
+    {dispatch_id, status, reply_to, waiting_for} — no id/path/
+    continuity_key at all. The old fallback chain landed on the literal
+    string "ok" for every dispatch closeout; it must land on `status` first."""
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    receipt = _seat.closed_receipt(
+        entry,
+        {
+            "dispatch_id": "PKT00001",
+            "status": "complete",
+            "reply_to": "willow",
+            "waiting_for": "verify_handoff",
+        },
+    )
+    assert receipt["handoff_id"] == "complete"
+
+
+def test_closed_receipt_still_falls_back_to_ok_with_nothing_at_all():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    receipt = _seat.closed_receipt(entry, {})
+    assert receipt["handoff_id"] == "ok"
 
 
 def test_run_turn_writes_a_tool_row_the_closeout_can_count(tmp_path, monkeypatch):

@@ -363,15 +363,21 @@ class SeatDaemon:
         """The default ``activate`` when ``crown_app_id`` is set: one bounded
         crown run per WAKE (``ratatosk.crown.run_wake``). See that
         function's docstring for what it does; this method only resolves
-        which app_id/dispatch_id the envelope names, guards against a
-        second wake overlapping the one already running, and wires the
-        daemon's own heartbeat in so liveness is still observable across a
-        wake that runs longer than one heartbeat_interval.
+        which dispatch_id the envelope names, guards against a second wake
+        overlapping the one already running, and wires the daemon's own
+        heartbeat in so liveness is still observable across a wake that runs
+        longer than one heartbeat_interval.
 
-        ``dispatch_id`` and an ``app_id`` override both come from
-        ``env.extra`` — anything the WAKE's JSON carried beyond the
-        envelope's own named fields (``parse_grove_message`` /
-        ``_envelope_from_dict`` route unknown keys there).
+        ``dispatch_id`` comes from ``env.extra`` — anything the WAKE's JSON
+        carried beyond the envelope's own named fields
+        (``parse_grove_message``/``_envelope_from_dict`` route unknown keys
+        there). ``app_id`` does NOT: this daemon acts as ONE seat,
+        ``crown_app_id``, fixed at process start (``--app-id``) — never
+        anything a message on the bus could name instead (Loki 3564BE3C F6:
+        a prior version read ``extra.get("app_id")`` first, so any sender
+        able to post a WAKE on this channel could pick which seat the
+        daemon entered as, with no sender check standing between the bus
+        and ``session_enter``).
         """
         if self._wake_busy:
             return (
@@ -380,12 +386,11 @@ class SeatDaemon:
             )
         extra = env.extra if isinstance(env.extra, dict) else {}
         dispatch_id = extra.get("dispatch_id")
-        app_id = extra.get("app_id") or self.crown_app_id
         self._wake_busy = True
         try:
             return crown.run_wake(
                 self.listener.mcp_call,
-                app_id=app_id,
+                app_id=self.crown_app_id,
                 dispatch_id=str(dispatch_id) if dispatch_id else None,
                 trace_id=env.trace_id,
                 mcp_extra_tools=self.mcp_extra_tools,
@@ -393,6 +398,7 @@ class SeatDaemon:
                 max_turns=self.wake_turns,
                 wall_clock_seconds=self.wake_seconds,
                 on_heartbeat=self.emit_heartbeat,
+                heartbeat_interval=self.heartbeat_interval,
             )
         finally:
             self._wake_busy = False

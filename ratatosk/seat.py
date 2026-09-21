@@ -269,6 +269,7 @@ def summarize(entries: list[dict]) -> dict:
     turns = 0
     tools: Counter[str] = Counter()
     receipts: list[dict] = []
+    notices: list[str] = []
     last_assistant = ""
     for entry in entries:
         etype = entry.get("type")
@@ -280,6 +281,15 @@ def summarize(entries: list[dict]) -> dict:
             content = entry.get("message", {}).get("content")
             if isinstance(content, str) and content.strip():
                 last_assistant = content.strip()
+        elif etype == "system":
+            # A budget refusal, a ladder refusal, a non-interactive confirm
+            # refusal, a wake crash — anything ``write_system`` recorded.
+            # Without this a closeout said nothing about how a wake ENDED
+            # (Loki 3564BE3C F7): an "ok" run and a turn-cap refusal produced
+            # the same narrative shape.
+            content = entry.get("message", {}).get("content")
+            if isinstance(content, str) and content.strip():
+                notices.append(content.strip())
         elif etype == "receipt":
             receipt = entry.get("receipt")
             # Turn receipts carry ``outcome`` (ratatosk.inference); the seat's
@@ -311,6 +321,7 @@ def summarize(entries: list[dict]) -> dict:
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "next_bite": last_assistant,
+        "notices": notices,
     }
 
 
@@ -357,6 +368,14 @@ def build_findings(summary: dict, entry: SeatEntry, jsonl_path: str) -> list[dic
                 "evidence": [f"{name}: {n}" for name, n in summary["tools"].items()],
             }
         )
+    if summary.get("notices"):
+        findings.append(
+            {
+                "title": "how the session ended",
+                "severity": "info",
+                "evidence": list(summary["notices"]),
+            }
+        )
     return findings
 
 
@@ -371,6 +390,8 @@ def narrative(summary: dict, entry: SeatEntry) -> str:
         head = f"Dispatch {entry.dispatch_id}. " + head
     if summary["rungs"]:
         head += " Rungs: " + ", ".join(f"{w} ×{n}" for w, n in summary["rungs"].items())
+    if summary.get("notices"):
+        head += f" Ended: {summary['notices'][-1]}"
     return head
 
 
@@ -425,11 +446,21 @@ def closed_receipt(entry: SeatEntry, result: dict) -> dict:
     if result.get("error"):
         receipt["error"] = str(result["error"])
     else:
+        # Name what the broker actually returned. handoff_write_v4's real
+        # answer (willow-mcp handoff.py) is
+        # ``{dispatch_id, status, reply_to, waiting_for}`` — no id/path/
+        # continuity_key field at all — so the old fallback chain landed on
+        # the literal string "ok" for every dispatch closeout, which reads
+        # as a fabricated identifier rather than the broker's own word for
+        # what happened (Loki 3564BE3C F1). ``status`` is checked before the
+        # literal "ok"; only a result with none of these keys at all still
+        # falls through to it.
         receipt["handoff_id"] = str(
             result.get("handoff_id")
             or result.get("id")
             or result.get("path")
             or result.get("continuity_key")
+            or result.get("status")
             or "ok"
         )
     return receipt

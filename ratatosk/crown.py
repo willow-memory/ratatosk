@@ -28,6 +28,7 @@ from ratatosk.history import (
 from ratatosk.hooks import HookRuntime
 from ratatosk.inference import InferenceRouter, LadderRefused
 from ratatosk.ladder import Ladder, LadderError
+from ratatosk.permission import NeedsConfirmation
 from ratatosk.permission import check as _permission_check
 from ratatosk.policy import PolicyStore, shadowed_rules, subject_field
 from ratatosk.redact import redact
@@ -584,6 +585,9 @@ def _run_turn_bounded(
     *,
     max_iterations: int | None = None,
     deadline: float | None = None,
+    non_interactive: bool = False,
+    on_heartbeat: Callable[[], None] | None = None,
+    heartbeat_interval: float = 30.0,
 ) -> str:
     """The turn loop, with an optional cap on model-call iterations and an
     optional wall-clock deadline (a ``time.monotonic()`` timestamp).
@@ -592,15 +596,32 @@ def _run_turn_bounded(
     woken seat — see ``run_wake`` below) gets the SAME tool loop the REPL
     uses — same compaction, same tool dispatch, same receipt inking — rather
     than a second copy that could drift from it. ``_run_turn`` above is this
-    function called with no bounds, so its behavior (and every test of it)
-    is unchanged.
+    function called with no bounds and ``non_interactive=False``, so its
+    behavior (and every test of it) is unchanged.
+
+    ``non_interactive`` (Loki 3564BE3C F2): with a human at the REPL, a
+    CONFIRM verdict prompts on stdin (``_tools.prompt_and_dispatch``). A
+    woken seat has no human at a keyboard by definition — prompting would
+    block on EOF under systemd (stdin closed) or hang forever in a
+    foreground daemon, taking the heartbeat down with it. Non-interactive
+    calls ``_tools.dispatch`` directly and answers a ``NeedsConfirmation``
+    itself: refused, inked to the transcript by name, the tool loop
+    continues (the model sees the refusal and can adapt) — never ``input()``.
+
+    ``on_heartbeat``/``heartbeat_interval`` (Loki 3564BE3C F5): fired from
+    INSIDE the loop, not only after it returns — a wake bounded by minutes
+    must not leave the daemon looking dark on ``grove_fleet_status`` for the
+    whole run.
 
     Returns one word naming how the loop ended: ``"ok"`` (a final answer with
     no further tool call), ``"empty_answer"``, ``"ladder_refused"``,
     ``"budget_turns"`` (``max_iterations`` reached before a final answer),
-    or ``"budget_seconds"`` (``deadline`` passed before a final answer). A
-    budget refusal is inked to the transcript (``write_system``) the same
-    way a ladder refusal is — never silent, never a raise.
+    or ``"budget_seconds"`` (``deadline`` passed — checked both between
+    calls AND right after a call returns, so a single long call that runs
+    past the deadline is still reported honestly rather than as ``"ok"``;
+    Loki 3564BE3C F4). A budget refusal is inked to the transcript
+    (``write_system``) the same way a ladder refusal is — never silent,
+    never a raise.
     """
     state.writer.write_user(user_input)
     state.history.append({"role": "user", "content": user_input})
@@ -612,6 +633,7 @@ def _run_turn_bounded(
         )
 
     iterations = 0
+    last_heartbeat = time.monotonic()
     # One loop for every dialect. The ladder walker returns Anthropic-shaped
     # blocks whichever rung answered, so the tool loop below does not know or
     # care whether groq, ollama or the SDK wrote them. The Anthropic client
@@ -627,6 +649,12 @@ def _run_turn_bounded(
             print(f"  {note}", flush=True)
             state.writer.write_system(note)
             return "budget_seconds"
+        if on_heartbeat is not None:
+            now = time.monotonic()
+            if now - last_heartbeat >= heartbeat_interval:
+                with contextlib.suppress(Exception):
+                    on_heartbeat()
+                last_heartbeat = now
         iterations += 1
         try:
             completion, receipt = inference.complete(
@@ -657,6 +685,17 @@ def _run_turn_bounded(
             return "empty_answer"
         state.writer.write_assistant(completion.text)
         state.history.append({"role": "assistant", "content": assistant_content})
+        # F4: the deadline is checked at the top of the loop for the NEXT
+        # call, but this call already happened and may have run past it by
+        # itself (a slow rung, or the SDK's own long read timeout) — checked
+        # again here, right after the call returns, so an overshoot is
+        # reported as a budget refusal even when this call ended in a final
+        # answer, rather than silently as "ok".
+        if deadline is not None and time.monotonic() >= deadline:
+            note = "[budget] wall-clock budget exceeded during the call — refusing, not stretching"
+            print(f"  {note}", flush=True)
+            state.writer.write_system(note)
+            return "budget_seconds"
         tool_uses = completion.tool_uses
         if not tool_uses:
             state.history, compacted = _compact(state.history, state)
@@ -666,15 +705,38 @@ def _run_turn_bounded(
 
         tool_results = []
         for tu in tool_uses:
-            result = _tools.prompt_and_dispatch(
-                tu["name"],
-                tu["input"],
-                state.args.trust,
-                state.mcp_names,
-                state.mcp_call,
-                policy_store=state.policy,
-                hook_runtime=state.hooks,
-            )
+            if non_interactive:
+                try:
+                    result = _tools.dispatch(
+                        tu["name"],
+                        tu["input"],
+                        state.mcp_names,
+                        state.mcp_call,
+                        trusted=state.args.trust,
+                        policy_store=state.policy,
+                        hook_runtime=state.hooks,
+                    )
+                except NeedsConfirmation as needs:
+                    note = (
+                        f"[confirm refused] {tu['name']}: {needs.decision.reason} "
+                        "— a wake has no human at the keyboard to ask"
+                    )
+                    print(f"  {note}", flush=True)
+                    state.writer.write_system(note)
+                    result = (
+                        f"{tu['name']} needs confirmation ({needs.decision.reason}) "
+                        "and was refused non-interactively during a wake."
+                    )
+            else:
+                result = _tools.prompt_and_dispatch(
+                    tu["name"],
+                    tu["input"],
+                    state.args.trust,
+                    state.mcp_names,
+                    state.mcp_call,
+                    policy_store=state.policy,
+                    hook_runtime=state.hooks,
+                )
             print(f"  [tool:{tu['name']}] → {str(result)[:120]}", flush=True)
             try:
                 state.writer.write_tool(tu["name"], tu["id"], len(str(result)))
@@ -747,6 +809,7 @@ def run_wake(
     max_turns: int = DEFAULT_WAKE_TURNS,
     wall_clock_seconds: float = DEFAULT_WAKE_SECONDS,
     on_heartbeat: Callable[[], None] | None = None,
+    heartbeat_interval: float = 30.0,
     env: Mapping[str, str] | None = None,
     ladder: Ladder | None = None,
     inference: InferenceRouter | None = None,
@@ -760,11 +823,19 @@ def run_wake(
     daemon already has ``mcp_call`` connected before a WAKE ever arrives,
     and keeps it connected after this returns.
 
+    ``app_id`` is trusted as given — CHOOSING which seat this is belongs to
+    the caller (the daemon's own ``crown_app_id``, fixed at process start),
+    never to anything the WAKE's JSON carried; see ``SeatDaemon._crown_activate``
+    (Loki 3564BE3C F6 — a bus message must not be able to pick a different
+    identity for the daemon to act as).
+
     Returns the one line the caller (``BusListener.process_message``, via
     the daemon's ``activate``) posts to the WAKE's reply channel — the
     sealed decision's "every wake inks a receipt beside the heartbeat with
     the handoff id" clause. Never raises: a defect here is a line naming the
-    defect, not a dead listener.
+    defect, not a dead listener — including a defect AFTER the seat entered,
+    which still reaches ``seat.close`` (Loki 3564BE3C F3: enter and close
+    are symmetric, not just on the happy path).
     """
     if not dispatch_id:
         return (
@@ -796,11 +867,19 @@ def run_wake(
 
     print(f"  {_seat.ink(writer, entry.receipt())}", flush=True)
 
-    task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
-    env_map = os.environ if env is None else env
-    if inference is None:
-        try:
-            inference = InferenceRouter.from_args(
+    # From here on the seat IS entered: every exit path below must still
+    # reach seat.close (F3). task_class stays at the safe default until the
+    # real value is resolved, so a crash before that point still names a
+    # real class in the receipt line rather than an undefined one.
+    task_class = DEFAULT_WAKE_TASK_CLASS
+    outcome = "crashed"
+    state: RuntimeState | None = None
+    try:
+        task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
+        env_map = os.environ if env is None else env
+        built_inference = inference
+        if built_inference is None:
+            built_inference = InferenceRouter.from_args(
                 task_class=task_class,
                 model=None,
                 local=False,
@@ -809,52 +888,53 @@ def run_wake(
                 env=env_map,
                 ladder=ladder,
             )
-        except LadderError as exc:
-            result = _seat.close(mcp_call, entry, writer.read_entries(), str(writer.path))
-            closed = _seat.closed_receipt(entry, result)
-            print(f"  {_seat.ink(writer, closed)}", flush=True)
-            return (
-                f"[ratatosk] wake trace={trace_id} dispatch={dispatch_id} "
-                f"refused: ladder unusable for class={task_class}: {exc}"
-            )
 
-    model = ""
-    with contextlib.suppress(Exception):
-        usable = inference.resolution.usable
-        if usable:
-            model = usable[0].model or ""
+        model = ""
+        with contextlib.suppress(Exception):
+            usable = built_inference.resolution.usable
+            if usable:
+                model = usable[0].model or ""
 
-    state = RuntimeState(
-        args=argparse.Namespace(
-            trust=True, mcp=True, listen=False, deposit=False, local=False
-        ),
-        model=model,
-        writer=writer,
-        history=[],
-        system_prompt=entry.system_prompt(_load_system_prompt()),
-        all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
-        mcp_names=mcp_names or set(),
-        mcp_call=mcp_call,
-        client=None,
-        policy=PolicyStore(),
-        hooks=HookRuntime(),
-        inference=inference,
-        task_class=task_class,
-        seat=entry,
-    )
-
-    prompt = entry.assignment.strip() or (
-        "Work the assigned packet — see the persona and assignment above."
-    )
-    deadline = time.monotonic() + max(0.0, wall_clock_seconds)
-    try:
-        outcome = _run_turn_bounded(
-            state, prompt, max_iterations=max_turns, deadline=deadline
+        state = RuntimeState(
+            args=argparse.Namespace(
+                trust=True, mcp=True, listen=False, deposit=False, local=False
+            ),
+            model=model,
+            writer=writer,
+            history=[],
+            system_prompt=entry.system_prompt(_load_system_prompt()),
+            all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
+            mcp_names=mcp_names or set(),
+            mcp_call=mcp_call,
+            client=None,
+            policy=PolicyStore(),
+            hooks=HookRuntime(),
+            inference=built_inference,
+            task_class=task_class,
+            seat=entry,
         )
-    except Exception as exc:  # a crashed turn still closes and inks — never a dead wake
+
+        prompt = entry.assignment.strip() or (
+            "Work the assigned packet — see the persona and assignment above."
+        )
+        deadline = time.monotonic() + max(0.0, wall_clock_seconds)
+        outcome = _run_turn_bounded(
+            state,
+            prompt,
+            max_iterations=max_turns,
+            deadline=deadline,
+            non_interactive=True,
+            on_heartbeat=on_heartbeat,
+            heartbeat_interval=heartbeat_interval,
+        )
+    except LadderError as exc:
+        outcome = f"refused: ladder unusable for class={task_class}: {exc}"
+        with contextlib.suppress(Exception):
+            writer.write_system(f"[wake] {outcome}")
+    except Exception as exc:  # a crashed setup/turn still closes and inks — never a dead wake
         outcome = "crashed"
         with contextlib.suppress(Exception):
-            state.writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
+            writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
 
     if on_heartbeat is not None:
         with contextlib.suppress(Exception):
@@ -864,12 +944,37 @@ def run_wake(
     closed = _seat.closed_receipt(entry, result)
     print(f"  {_seat.ink(writer, closed)}", flush=True)
 
+    # A woken seat gets the same end-of-session bookkeeping a REPL session
+    # does, when there was a RuntimeState to take it from (Loki 3564BE3C F8):
+    # SessionEnd hooks, the Grove session_ended receipt, and history indexing
+    # so /sessions and /resume can find this transcript. Best-effort and
+    # independently guarded — none of this may cost the wake its receipt.
+    if state is not None:
+        turns = len(state.history) // 2
+        with contextlib.suppress(Exception):
+            state.hooks.run_event(
+                "SessionEnd", {"session_id": writer.session_id, "turns": turns}
+            )
+        with contextlib.suppress(Exception):
+            _grove.session_ended(writer.session_id, turns, str(writer.path))
+        with contextlib.suppress(Exception):
+            index_session(
+                session_id=writer.session_id,
+                cwd=writer.cwd,
+                model=state.model,
+                jsonl_path=writer.path,
+                resumed_from=None,
+            )
+
     summary = _seat.summarize(writer.read_entries())
-    handoff_id = closed.get("handoff_id") or closed.get("error") or "?"
+    # closed_receipt names whatever the broker actually returned (dispatch_id
+    # status/handoff_id/path/continuity_key fallback chain, seat.py) — never
+    # the literal string "ok" standing in for a real answer (Loki 3564BE3C F1).
+    handoff_named = closed.get("handoff_id") or closed.get("error") or "unknown"
     rungs = ", ".join(f"{w} x{n}" for w, n in summary["rungs"].items()) or "none"
     return (
         f"[ratatosk] wake receipt trace={trace_id} dispatch={dispatch_id} "
-        f"app={app_id} handoff={handoff_id} class={task_class} outcome={outcome} "
+        f"app={app_id} handoff={handoff_named} class={task_class} outcome={outcome} "
         f"rungs={rungs} tokens={summary['tokens_in']}/{summary['tokens_out']}"
     )
 
