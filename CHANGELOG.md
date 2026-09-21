@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/willow-memory/ratatosk/compare/v1.7.1...v1.8.0) (2026-09-21)
+
+
+### Added
+
+* **crown:** data-defined provider ladder with an OpenAI-compatible client; every turn inks a receipt ([#48](https://github.com/willow-memory/ratatosk/issues/48)) ([e6b51bb](https://github.com/willow-memory/ratatosk/commit/e6b51bbe9f852452039e70879a68201c3eb3601d))
+* **crown:** provider ladder — OpenAI-compatible rungs beside Anthropic, one receipt per model call ([5393927](https://github.com/willow-memory/ratatosk/commit/53939279c9aae6bf3155f253e4de11208437c94e))
+
+
+### Fixed
+
+* **crown:** every wake inks — crashes, refused Grove posts, dialect-blind --model, quota prose, key echoes, empty answers ([632225c](https://github.com/willow-memory/ratatosk/commit/632225cbe7980e169929d2ca0cc2d89ea15eedf6))
+
 ## [1.7.1](https://github.com/willow-memory/ratatosk/compare/v1.7.0...v1.7.1) (2026-09-12)
 
 
