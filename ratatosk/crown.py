@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ratatosk import grove as _grove
+from ratatosk import seat as _seat
 from ratatosk import session as _session
 from ratatosk import sync as _sync
 from ratatosk import tools as _tools
@@ -319,6 +320,9 @@ class RuntimeState:
     #: exercise the router without a model; ``_run_turn`` refuses without it.
     inference: object | None = None
     task_class: str = "chat"
+    #: The seat this crown entered as (``ratatosk.seat.enter``), or ``None``
+    #: when run without ``--app-id`` — the plain REPL, no persona, no handoff.
+    seat: _seat.SeatEntry | None = None
 
 
 class CommandRouter:
@@ -357,6 +361,11 @@ class CommandRouter:
     def _cmd_status(self, _arg: str) -> bool:
         receipt = _grove.last_receipt()
         print(f"  session    : {self.state.writer.session_id}")
+        seat = self.state.seat
+        if seat is not None:
+            print(f"  seat       : {seat.app_id} ({seat.entry_mode})")
+            print(f"  dispatch   : {seat.dispatch_id or '-'}")
+            print(f"  closeout   : {seat.closeout_tool}")
         print(f"  turns      : {len(self.state.history) // 2}")
         print(f"  jsonl      : {self.state.writer.path}")
         print(f"  model      : {self.state.model}")
@@ -626,6 +635,10 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
                 hook_runtime=state.hooks,
             )
             print(f"  [tool:{tu['name']}] → {str(result)[:120]}", flush=True)
+            try:
+                state.writer.write_tool(tu["name"], tu["id"], len(str(result)))
+            except Exception as exc:  # a record must not be able to end the turn
+                print(f"  [tool] row not written: {exc}", flush=True)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
@@ -668,6 +681,21 @@ def _shutdown(state: RuntimeState) -> None:
     """
     writer = state.writer
     turns = len(state.history) // 2
+
+    # The seat's own closeout first — it speaks to willow-mcp, so it must run
+    # while the transport is still up, and before the bus hears "session
+    # ended". A failed handoff is printed and inked, never swallowed: the
+    # JSONL still lands and is still indexed below either way.
+    if state.seat is not None and state.mcp_call is not None:
+        try:
+            result = _seat.close(
+                state.mcp_call, state.seat, writer.read_entries(), str(writer.path)
+            )
+        except Exception as exc:  # close() should not raise; belt and braces
+            result = {"error": f"closeout raised: {exc}"}
+        receipt = _seat.closed_receipt(state.seat, result)
+        line = _seat.ink(writer, receipt)
+        print(f"  {line}", flush=True)
 
     if state.args.mcp:
         try:
@@ -771,6 +799,22 @@ def main() -> None:
     parser.add_argument(
         "--deposit", action="store_true", help="Write tier-0 session deposit on exit"
     )
+    parser.add_argument(
+        "--app-id",
+        dest="app_id",
+        default=None,
+        help=(
+            "Run as this fleet seat: session_enter through willow-mcp before the "
+            "first turn, carry the persona the broker returns, hand off as the "
+            "seat at close (requires --mcp)"
+        ),
+    )
+    parser.add_argument(
+        "--dispatch-id",
+        dest="dispatch_id",
+        default=None,
+        help="Work this dispatch packet as the seat (requires --app-id)",
+    )
     args = parser.parse_args()
 
     # The help text has always said --listen requires --mcp, but nothing
@@ -781,6 +825,28 @@ def main() -> None:
         parser.error(
             "--listen requires --mcp: the bus listener speaks to willow-mcp over stdio"
         )
+    # Same shape for the seat: the entry verb lives on the other end of the
+    # stdio transport, so a seat without --mcp is a flag that cannot do what
+    # it says.
+    if args.app_id and not args.mcp:
+        parser.error(
+            "--app-id requires --mcp: session_enter speaks to willow-mcp over stdio"
+        )
+    if args.dispatch_id and not args.app_id:
+        parser.error("--dispatch-id requires --app-id: a packet is worked by a seat")
+    if args.app_id:
+        try:
+            _seat.check_app_id(args.app_id)
+        except _seat.SeatRefused as exc:
+            parser.error(str(exc))
+        # The flag decides; the environment follows. The willow-mcp child we
+        # spawn reads WILLOW_APP_ID (mcp_client forwards WILLOW_*), Grove sends
+        # read RATATOSK_APP_ID, the listener's node reads WILLOW_AGENT_NAME —
+        # all three must agree, and none may have been left over from a stale
+        # shell picking a seat the operator did not name.
+        os.environ["WILLOW_APP_ID"] = args.app_id
+        os.environ["RATATOSK_APP_ID"] = args.app_id
+        os.environ["WILLOW_AGENT_NAME"] = args.app_id
 
     # A configured channel and no transport is a misconfiguration the operator
     # should hear about at startup, not discover in a failed receipt halfway
@@ -814,6 +880,29 @@ def main() -> None:
             print(f"  [grove] {bound.detail}", flush=True)
         print(f"  [mcp] {len(mcp_names)} tools loaded", flush=True)
         if args.listen:
+            # A listening seat is a seat: it enters once, so the broker has a
+            # session for the node the bus will address, and its posts carry
+            # the seat's name. Activation on WAKE is slice 3 — not wired here.
+            entered: _seat.SeatEntry | None = None
+            if args.app_id:
+                seat_id = f"{args.app_id}-listen-{os.getpid()}"
+                try:
+                    entered = _seat.enter(
+                        mcp_call,
+                        app_id=args.app_id,
+                        session_id=seat_id,
+                        project=os.environ.get("WILLOW_HANDOFF_PROJECT", ""),
+                        workspace=str(Path.cwd()),
+                    )
+                except _seat.SeatRefused as exc:
+                    print(f"  [seat] {exc}", flush=True)
+                    if not mcp_client.shutdown():
+                        print(
+                            "  [mcp] stdio teardown did not finish within timeout",
+                            flush=True,
+                        )
+                    raise SystemExit(2)
+                print(f"  {_seat.ink(None, entered.receipt())}", flush=True)
             from ratatosk.listener import BusListener
 
             # No session writer on this path — there is no REPL and no
@@ -836,11 +925,28 @@ def main() -> None:
             except ValueError as exc:
                 refused = str(exc)
             finally:
-                if not mcp_client.shutdown():
+                # A seat that entered leaves the way it came: the closeout
+                # runs before the transport goes, whichever way the loop
+                # ended (Ctrl-C, a refused channel, a crash). Entry and exit
+                # are symmetric or the broker keeps an open session per
+                # listener start.
+                if entered is not None:
+                    try:
+                        result = _seat.close(mcp_call, entered, [], "")
+                    except Exception as exc:
+                        result = {"error": f"closeout raised: {exc}"}
                     print(
-                        "  [mcp] stdio teardown did not finish within timeout",
+                        f"  {_seat.ink(None, _seat.closed_receipt(entered, result))}",
                         flush=True,
                     )
+                try:
+                    if not mcp_client.shutdown():
+                        print(
+                            "  [mcp] stdio teardown did not finish within timeout",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(f"  [mcp] shutdown failed: {exc}", flush=True)
             if refused:
                 # Same refusal the termux boot script prints, and the same exit
                 # code: an unconfigured listener is a failure, not a quiet no-op.
@@ -849,6 +955,33 @@ def main() -> None:
             return
 
     writer = _session.SessionWriter(cwd=str(Path.cwd()))
+
+    # Enter as the seat before anything else is built: a refused entry (an
+    # error result, or blockers on a specialist) means no loop, no ladder, no
+    # prompt — exit 2 with the reason, the transport torn down. The session
+    # id the broker records is the JSONL's, so the handoff and the transcript
+    # name the same session.
+    seat: _seat.SeatEntry | None = None
+    if args.app_id:
+        try:
+            seat = _seat.enter(
+                mcp_call,
+                app_id=args.app_id,
+                session_id=writer.session_id,
+                dispatch_id=args.dispatch_id,
+                project=os.environ.get("WILLOW_HANDOFF_PROJECT", ""),
+                workspace=writer.cwd,
+            )
+        except _seat.SeatRefused as exc:
+            print(f"ERROR: {exc}", flush=True)
+            from ratatosk import mcp_client
+
+            if not mcp_client.shutdown():
+                print(
+                    "  [mcp] stdio teardown did not finish within timeout", flush=True
+                )
+            sys.exit(2)
+        print(f"  {_seat.ink(writer, seat.receipt())}", flush=True)
 
     # The ladder decides which provider answers; the environment only holds
     # the keys the ladder names. The credentials-file fallback for the
@@ -888,12 +1021,15 @@ def main() -> None:
     first = inference.resolution.usable[0]
     model = first.model or ""
 
+    repo_prompt = _load_system_prompt()
     state = RuntimeState(
         args=args,
         model=model,
         writer=writer,
         history=[],
-        system_prompt=_load_system_prompt(),
+        # The broker's persona leads and the packet brief follows when this
+        # crown is a seat; the repo's CLAUDE.md alone otherwise, as before.
+        system_prompt=seat.system_prompt(repo_prompt) if seat else repo_prompt,
         all_tools=_tools.BASE_TOOLS + mcp_extra_tools,
         mcp_names=mcp_names,
         mcp_call=mcp_call,
@@ -902,6 +1038,7 @@ def main() -> None:
         hooks=hooks,
         inference=inference,
         task_class=args.task_class,
+        seat=seat,
     )
     router = CommandRouter(state)
     start_receipt = _grove.session_started(writer.session_id, model)
@@ -912,9 +1049,10 @@ def main() -> None:
         print(f"  [grove] {start_receipt.detail}", flush=True)
 
     trust_label = "trust=on" if args.trust else "trust=off"
+    seat_label = f"  [seat: {seat.app_id}/{seat.entry_mode}]" if seat else ""
     print(
-        f"\nRatatosk  [{args.task_class}: {first.rung.name}/{model}]  [{trust_label}]  "
-        f"session:{writer.session_id[:8]}…"
+        f"\nRatatosk  [{args.task_class}: {first.rung.name}/{model}]  [{trust_label}]"
+        f"{seat_label}  session:{writer.session_id[:8]}…"
     )
     print("Type /help for commands.\n")
 

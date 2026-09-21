@@ -489,20 +489,25 @@ class OllamaClient:
             # class, so this module never imports it either.
             name = exc.__class__.__name__
             status = getattr(getattr(exc, "response", None), "status_code", None)
+            # Symmetry with the other two clients: no key rides an Ollama
+            # request, but the router treats every ProviderError message the
+            # same way and this one should not be the exception that trusts
+            # its input.
+            detail = redact(str(exc))
             if status is not None:
-                retryable, kind = _classify_http(int(status), str(exc))
+                retryable, kind = _classify_http(int(status), detail)
                 raise ProviderError(
-                    f"ollama HTTP {status}: {exc}",
+                    f"ollama HTTP {status}: {detail}",
                     retryable=retryable,
                     status=status,
                     kind=kind,
                 ) from exc
             if "Timeout" in name:
                 raise ProviderError(
-                    f"ollama timeout: {exc}", retryable=True, kind="timeout"
+                    f"ollama timeout: {detail}", retryable=True, kind="timeout"
                 ) from exc
             raise ProviderError(
-                f"ollama unreachable: {exc}", retryable=True, kind="transport"
+                f"ollama unreachable: {detail}", retryable=True, kind="transport"
             ) from exc
         latency = int((time.monotonic() - started) * 1000)
         return Completion(

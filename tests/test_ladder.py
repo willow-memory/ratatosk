@@ -195,6 +195,76 @@ def test_a_forced_model_a_rung_already_lists_wins_over_the_name_shape():
     assert res.usable[0].rung.name == "free" and res.usable[0].model == "free-8b"
 
 
+def _two_openai_rungs() -> dict:
+    """Two usable openai rungs in class order; only the SECOND lists the
+    forced model. Gap 72168ff799de's shape: cerebras then gemini on `build`,
+    `--model gemini-2.5-flash`."""
+    raw = _good()
+    raw["rungs"]["first"] = {
+        "provider": "cerebras",
+        "dialect": "openai",
+        "base_url": "https://first.example/v1",
+        "key_env": "FIRST_API_KEY",
+        "models": {"build": "first-70b"},
+        "verify_at": "2026-09-20",
+    }
+    raw["rungs"]["second"] = {
+        "provider": "google-ai-studio",
+        "dialect": "openai",
+        "base_url": "https://second.example/v1",
+        "key_env": "SECOND_API_KEY",
+        "models": {"build": "second-flash"},
+        "verify_at": "2026-09-20",
+    }
+    raw["classes"]["build"] = ["first", "second", "paid"]
+    return raw
+
+
+def test_a_forced_model_prefers_the_rung_that_lists_it_over_an_earlier_same_dialect_rung():
+    """Gap 72168ff799de (Loki, 4177ABB8): `--class build --model gemini-2.5-flash`
+    used to land on cerebras — the first openai rung in class order — and
+    404 loudly. The rung that lists the model wins; the earlier rung keeps
+    its own model behind it as fall-through."""
+    ladder = parse_ladder(_two_openai_rungs())
+    res = ladder.resolve(
+        "build",
+        env={"FIRST_API_KEY": "a", "SECOND_API_KEY": "b"},
+        today=TODAY,
+        model="second-flash",
+    )
+    assert [(v.rung.name, v.model) for v in res.usable] == [
+        ("second", "second-flash"),
+        ("first", "first-70b"),
+    ]
+    assert res.forced_unplaced == ""
+
+
+def test_a_forced_model_no_rung_lists_falls_to_the_first_same_dialect_rung():
+    """A model nobody lists but whose shape is openai still lands on the
+    first usable openai rung — the prior behaviour, kept as the fallback."""
+    ladder = parse_ladder(_two_openai_rungs())
+    res = ladder.resolve(
+        "build",
+        env={"FIRST_API_KEY": "a", "SECOND_API_KEY": "b"},
+        today=TODAY,
+        model="some-other-openai-model",
+    )
+    assert res.usable[0].rung.name == "first"
+    assert res.usable[0].model == "some-other-openai-model"
+
+
+def test_a_listing_rung_without_a_key_does_not_capture_the_forced_model():
+    """The listing rung must be USABLE to win; unkeyed, the forced model
+    falls through to the first usable same-dialect rung."""
+    ladder = parse_ladder(_two_openai_rungs())
+    res = ladder.resolve(
+        "build", env={"FIRST_API_KEY": "a"}, today=TODAY, model="second-flash"
+    )
+    assert res.usable[0].rung.name == "first"
+    assert res.usable[0].model == "second-flash"
+    assert res.forced_unplaced == ""
+
+
 def test_force_dialect_overrides_the_name_shape():
     ladder = parse_ladder(_good())
     res = ladder.resolve(

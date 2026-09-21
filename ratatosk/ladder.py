@@ -206,10 +206,34 @@ class Ladder:
         pending = model or None
         wanted = force_dialect or (model_dialect(pending) if pending else "")
         placed: int | None = None
-        for rung in self.rungs_for(task_class):
-            serves = bool(pending) and (
-                pending in rung.models.values() or rung.dialect == wanted
-            )
+        rungs = list(self.rungs_for(task_class))
+        # Gap 72168ff799de: a rung that LISTS the model beats one that merely
+        # speaks its dialect — `--class build --model gemini-2.5-flash` lands
+        # on gemini, not on the first openai rung in class order (cerebras),
+        # which would 404 on a name it never served. Two passes: the listing
+        # rungs first, and only when none is usable, the first usable rung of
+        # the right dialect.
+        target: int | None = None
+        if pending:
+            lists = [
+                i
+                for i, rung in enumerate(rungs)
+                if pending in rung.models.values()
+                and self.verdict(
+                    rung, task_class, env=env, today=today, forced_model=pending
+                ).usable
+            ]
+            speaks = [
+                i
+                for i, rung in enumerate(rungs)
+                if rung.dialect == wanted
+                and self.verdict(
+                    rung, task_class, env=env, today=today, forced_model=pending
+                ).usable
+            ]
+            target = (lists or speaks or [None])[0]
+        for index, rung in enumerate(rungs):
+            serves = pending is not None and index == target
             v = self.verdict(
                 rung,
                 task_class,
