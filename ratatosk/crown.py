@@ -7,6 +7,8 @@ import contextlib
 import json
 import os
 import sys
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +27,7 @@ from ratatosk.history import (
 )
 from ratatosk.hooks import HookRuntime
 from ratatosk.inference import InferenceRouter, LadderRefused
-from ratatosk.ladder import LadderError
+from ratatosk.ladder import Ladder, LadderError
 from ratatosk.permission import check as _permission_check
 from ratatosk.policy import PolicyStore, shadowed_rules, subject_field
 from ratatosk.redact import redact
@@ -573,6 +575,33 @@ class CommandRouter:
 
 
 def _run_turn(state: RuntimeState, user_input: str) -> None:
+    _run_turn_bounded(state, user_input)
+
+
+def _run_turn_bounded(
+    state: RuntimeState,
+    user_input: str,
+    *,
+    max_iterations: int | None = None,
+    deadline: float | None = None,
+) -> str:
+    """The turn loop, with an optional cap on model-call iterations and an
+    optional wall-clock deadline (a ``time.monotonic()`` timestamp).
+
+    Extracted out of ``_run_turn`` so a bounded, non-interactive caller (a
+    woken seat — see ``run_wake`` below) gets the SAME tool loop the REPL
+    uses — same compaction, same tool dispatch, same receipt inking — rather
+    than a second copy that could drift from it. ``_run_turn`` above is this
+    function called with no bounds, so its behavior (and every test of it)
+    is unchanged.
+
+    Returns one word naming how the loop ended: ``"ok"`` (a final answer with
+    no further tool call), ``"empty_answer"``, ``"ladder_refused"``,
+    ``"budget_turns"`` (``max_iterations`` reached before a final answer),
+    or ``"budget_seconds"`` (``deadline`` passed before a final answer). A
+    budget refusal is inked to the transcript (``write_system``) the same
+    way a ladder refusal is — never silent, never a raise.
+    """
     state.writer.write_user(user_input)
     state.history.append({"role": "user", "content": user_input})
 
@@ -582,11 +611,23 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
             "no inference router — crown.main builds one from the ladder"
         )
 
+    iterations = 0
     # One loop for every dialect. The ladder walker returns Anthropic-shaped
     # blocks whichever rung answered, so the tool loop below does not know or
     # care whether groq, ollama or the SDK wrote them. The Anthropic client
     # streams to stdout itself (its `echo`); the others print when they land.
     while True:
+        if max_iterations is not None and iterations >= max_iterations:
+            note = f"[budget] turn cap reached ({max_iterations}) — refusing, not stretching"
+            print(f"  {note}", flush=True)
+            state.writer.write_system(note)
+            return "budget_turns"
+        if deadline is not None and time.monotonic() >= deadline:
+            note = "[budget] wall-clock budget exceeded — refusing, not stretching"
+            print(f"  {note}", flush=True)
+            state.writer.write_system(note)
+            return "budget_seconds"
+        iterations += 1
         try:
             completion, receipt = inference.complete(
                 state.system_prompt, state.history, state.all_tools
@@ -596,7 +637,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
             # in history so the operator can fix the rung and retry.
             print(f"\n  [ladder] {exc}", flush=True)
             state.writer.write_system(f"[ladder refused] {exc}")
-            return
+            return "ladder_refused"
         if not _echoed(inference):
             print(completion.text, end="", flush=True)
         print()
@@ -613,7 +654,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
             note = f"[empty answer] {receipt.rung} returned no content"
             print(f"  {note}", flush=True)
             state.writer.write_system(note)
-            break
+            return "empty_answer"
         state.writer.write_assistant(completion.text)
         state.history.append({"role": "assistant", "content": assistant_content})
         tool_uses = completion.tool_uses
@@ -621,7 +662,7 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
             state.history, compacted = _compact(state.history, state)
             if compacted:
                 _record_compaction(state, compacted)
-            break
+            return "ok"
 
         tool_results = []
         for tu in tool_uses:
@@ -643,6 +684,194 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+#: The packet's ``role`` (dispatch meta, e.g. ``dispatch_read``'s
+#: ``meta.role`` — the value ``dispatch_send`` was given, NOT
+#: ``session_enter``'s own ``role`` field, which names the persona's
+#: function like "builder" instead) to the ladder's task_class. Verbatim
+#: from ``provider_ladder.json``'s ``_classes_doc``: "Names match dispatch
+#: task_class / the envelope task classes (build-work-order -> build,
+#: auditor -> audit, librarian -> research, operator -> operate,
+#: witness -> witness)."
+ROLE_TASK_CLASS = {
+    "build-work-order": "build",
+    "auditor": "audit",
+    "librarian": "research",
+    "operator": "operate",
+    "witness": "witness",
+}
+
+#: A woken seat with no readable/recognized packet role gets the ladder's
+#: plainest class rather than a guessed paid one — "chat" is also
+#: ``crown.main``'s own default with no ``--class`` given.
+DEFAULT_WAKE_TASK_CLASS = "chat"
+
+#: How many model-call iterations (see ``_run_turn_bounded``) and how long a
+#: single WAKE may run before it refuses rather than stretches. Justified by
+#: the shape of a build-work-order packet — a handful of tool-backed turns,
+#: not an open-ended conversation — and by ``BusListener.run_once`` being
+#: synchronous: a wake this long already blocks the bus poll for its
+#: duration, so the ceiling also bounds how long one wake can hold the loop.
+#: A daemon that wants more passes ``--wake-turns``/``--wake-seconds``.
+DEFAULT_WAKE_TURNS = 8
+DEFAULT_WAKE_SECONDS = 600.0
+
+
+def _wake_task_class(mcp_call, app_id: str, dispatch_id: str) -> str:
+    """The packet's ``role`` (via ``dispatch_read``), mapped through
+    ``ROLE_TASK_CLASS``. Any failure to read or an unrecognized role answers
+    ``DEFAULT_WAKE_TASK_CLASS`` — a class this call cannot determine is not a
+    reason to fail the wake, since the ladder itself still refuses honestly
+    if that class has no usable rung."""
+    try:
+        result = _seat.decode_result(
+            mcp_call("dispatch_read", {"app_id": app_id, "dispatch_id": dispatch_id})
+        )
+    except Exception:
+        return DEFAULT_WAKE_TASK_CLASS
+    if result.get("error"):
+        return DEFAULT_WAKE_TASK_CLASS
+    role = str((result.get("meta") or {}).get("role") or "")
+    return ROLE_TASK_CLASS.get(role, DEFAULT_WAKE_TASK_CLASS)
+
+
+def run_wake(
+    mcp_call,
+    *,
+    app_id: str | None,
+    dispatch_id: str | None,
+    trace_id: str = "",
+    mcp_extra_tools: list[dict] | None = None,
+    mcp_names: set[str] | None = None,
+    max_turns: int = DEFAULT_WAKE_TURNS,
+    wall_clock_seconds: float = DEFAULT_WAKE_SECONDS,
+    on_heartbeat: Callable[[], None] | None = None,
+    env: Mapping[str, str] | None = None,
+    ladder: Ladder | None = None,
+    inference: InferenceRouter | None = None,
+    cwd: str | None = None,
+) -> str:
+    """One bounded crown run for a WAKE-activated seat (sealed 3613d55e,
+    slice 3 — gap 692373e803a1). This is ``crown.main``'s seat-entry +
+    turn-loop + seat-close path, reshaped for a daemon's ``activate``
+    callback: no REPL, no stdin, one packet, then done. Standing the MCP
+    transport up and tearing it down is NOT this function's job — the
+    daemon already has ``mcp_call`` connected before a WAKE ever arrives,
+    and keeps it connected after this returns.
+
+    Returns the one line the caller (``BusListener.process_message``, via
+    the daemon's ``activate``) posts to the WAKE's reply channel — the
+    sealed decision's "every wake inks a receipt beside the heartbeat with
+    the handoff id" clause. Never raises: a defect here is a line naming the
+    defect, not a dead listener.
+    """
+    if not dispatch_id:
+        return (
+            f"[ratatosk] wake trace={trace_id} refused: no dispatch_id in "
+            "envelope — acknowledged, not worked"
+        )
+    if not app_id:
+        return (
+            f"[ratatosk] wake trace={trace_id} refused: no app_id — neither "
+            "the envelope nor the daemon named a seat to enter as"
+        )
+    try:
+        _seat.check_app_id(app_id, env=env)
+    except _seat.SeatRefused as exc:
+        return f"[ratatosk] wake trace={trace_id} refused: {exc}"
+
+    writer = _session.SessionWriter(cwd=cwd or str(Path.cwd()))
+    try:
+        entry = _seat.enter(
+            mcp_call,
+            app_id=app_id,
+            session_id=writer.session_id,
+            dispatch_id=dispatch_id,
+            project=os.environ.get("WILLOW_HANDOFF_PROJECT", ""),
+            workspace=writer.cwd,
+        )
+    except _seat.SeatRefused as exc:
+        return f"[ratatosk] wake trace={trace_id} entry refused: {exc}"
+
+    print(f"  {_seat.ink(writer, entry.receipt())}", flush=True)
+
+    task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
+    env_map = os.environ if env is None else env
+    if inference is None:
+        try:
+            inference = InferenceRouter.from_args(
+                task_class=task_class,
+                model=None,
+                local=False,
+                writer=writer,
+                echo=None,
+                env=env_map,
+                ladder=ladder,
+            )
+        except LadderError as exc:
+            result = _seat.close(mcp_call, entry, writer.read_entries(), str(writer.path))
+            closed = _seat.closed_receipt(entry, result)
+            print(f"  {_seat.ink(writer, closed)}", flush=True)
+            return (
+                f"[ratatosk] wake trace={trace_id} dispatch={dispatch_id} "
+                f"refused: ladder unusable for class={task_class}: {exc}"
+            )
+
+    model = ""
+    with contextlib.suppress(Exception):
+        usable = inference.resolution.usable
+        if usable:
+            model = usable[0].model or ""
+
+    state = RuntimeState(
+        args=argparse.Namespace(
+            trust=True, mcp=True, listen=False, deposit=False, local=False
+        ),
+        model=model,
+        writer=writer,
+        history=[],
+        system_prompt=entry.system_prompt(_load_system_prompt()),
+        all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
+        mcp_names=mcp_names or set(),
+        mcp_call=mcp_call,
+        client=None,
+        policy=PolicyStore(),
+        hooks=HookRuntime(),
+        inference=inference,
+        task_class=task_class,
+        seat=entry,
+    )
+
+    prompt = entry.assignment.strip() or (
+        "Work the assigned packet — see the persona and assignment above."
+    )
+    deadline = time.monotonic() + max(0.0, wall_clock_seconds)
+    try:
+        outcome = _run_turn_bounded(
+            state, prompt, max_iterations=max_turns, deadline=deadline
+        )
+    except Exception as exc:  # a crashed turn still closes and inks — never a dead wake
+        outcome = "crashed"
+        with contextlib.suppress(Exception):
+            state.writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
+
+    if on_heartbeat is not None:
+        with contextlib.suppress(Exception):
+            on_heartbeat()
+
+    result = _seat.close(mcp_call, entry, writer.read_entries(), str(writer.path))
+    closed = _seat.closed_receipt(entry, result)
+    print(f"  {_seat.ink(writer, closed)}", flush=True)
+
+    summary = _seat.summarize(writer.read_entries())
+    handoff_id = closed.get("handoff_id") or closed.get("error") or "?"
+    rungs = ", ".join(f"{w} x{n}" for w, n in summary["rungs"].items()) or "none"
+    return (
+        f"[ratatosk] wake receipt trace={trace_id} dispatch={dispatch_id} "
+        f"app={app_id} handoff={handoff_id} class={task_class} outcome={outcome} "
+        f"rungs={rungs} tokens={summary['tokens_in']}/{summary['tokens_out']}"
+    )
 
 
 def _non_empty(blocks: list[dict]) -> list[dict] | None:

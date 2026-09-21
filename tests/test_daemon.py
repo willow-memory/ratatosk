@@ -9,10 +9,13 @@ run_forever actually honors.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from ratatosk import crown
 from ratatosk.daemon import DEFAULT_HEARTBEAT_INTERVAL, SeatDaemon, default_activate
+from ratatosk.providers import Completion
 
 
 def test_daemon_binds_the_configured_channel():
@@ -404,3 +407,524 @@ def test_heartbeat_still_fires_when_the_ledger_is_quiet(tmp_path):
 
     assert calls.count("grove_heartbeat") == 1
     assert daemon.poll_seal_ledger() == 0
+
+
+# -- crown.run_wake: a WAKE becomes a bounded crown run --------------------
+#
+# Sealed 3613d55e slice 3 (gap 692373e803a1). These drive a fake mcp_call
+# (records what was asked, answers from a table — same style as
+# test_seat.py's FakeMCP) and a fake inference/ladder (SimpleNamespace or a
+# real Ladder with a stub client), never a real provider or a real
+# willow-mcp process.
+
+PERSONA = "You are Hanuman — Builder.\n\n*ΔΣ=42*\n"
+
+
+def _entered(**overrides) -> dict:
+    result = {
+        "entry_mode": "dispatch",
+        "app_id": "hanuman",
+        "session_id": "s-1",
+        "dispatch_id": "PKT00001",
+        "persona": PERSONA,
+        "job": "Code, builds, tests, Kart",
+        "not_job": "Direct master commits",
+        "assignment": "# Build the thing\n\nOne bite.",
+        "closeout_tools": ["handoff_write_v4"],
+        "blockers": {"count": 0, "items": []},
+    }
+    result.update(overrides)
+    return result
+
+
+class _FakeMCP:
+    """Records every call; answers from a table (dict, exception, or a
+    callable taking the inputs) keyed by tool name."""
+
+    def __init__(self, answers: dict | None = None):
+        self.calls: list[tuple[str, dict]] = []
+        self.answers = answers or {}
+
+    def __call__(self, name: str, inputs: dict):
+        self.calls.append((name, inputs))
+        answer = self.answers.get(name, {"ok": True})
+        if isinstance(answer, Exception):
+            raise answer
+        if callable(answer):
+            return answer(inputs)
+        return answer
+
+    def named(self, name: str) -> list[dict]:
+        return [inputs for n, inputs in self.calls if n == name]
+
+
+def _fake_inference(complete):
+    """A stand-in for InferenceRouter: only ``.complete`` and ``.resolution``
+    (read for the informational ``model`` field) are touched by run_wake."""
+    return SimpleNamespace(
+        current=None,
+        resolution=SimpleNamespace(usable=[SimpleNamespace(model="fake-model")]),
+        complete=complete,
+    )
+
+
+def test_run_wake_refuses_with_no_dispatch_id_and_never_enters():
+    mcp = _FakeMCP()
+    line = crown.run_wake(mcp, app_id="hanuman", dispatch_id=None, trace_id="tr-1")
+    assert "refused" in line and "no dispatch_id" in line
+    assert mcp.calls == [], "acknowledged by name, never worked"
+
+
+def test_run_wake_refuses_with_no_app_id():
+    mcp = _FakeMCP()
+    line = crown.run_wake(mcp, app_id=None, dispatch_id="PKT1", trace_id="tr-2")
+    assert "refused" in line and "no app_id" in line
+    assert mcp.calls == []
+
+
+def test_run_wake_refuses_app_id_willow(monkeypatch):
+    """seat.py rule 2, enforced again here even if a WAKE's extra somehow
+    tried to name the orchestrator seat: never app_id=willow from a daemon."""
+    monkeypatch.delenv("WILLOW_HUMAN_ORCHESTRATOR", raising=False)
+    mcp = _FakeMCP()
+    line = crown.run_wake(mcp, app_id="willow", dispatch_id="PKT1", trace_id="tr-3")
+    assert "refused" in line and "human orchestrator" in line
+    assert mcp.calls == [], "refused before session_enter"
+
+
+def test_run_wake_names_the_brokers_entry_refusal():
+    mcp = _FakeMCP({"session_enter": {"error": "gate denied: expired lease"}})
+    line = crown.run_wake(mcp, app_id="hanuman", dispatch_id="PKT1", trace_id="tr-4")
+    assert "entry refused" in line and "gate denied" in line
+    assert not mcp.named("handoff_write_v4")
+
+
+def test_run_wake_happy_path_enters_runs_closes_and_inks_a_receipt_line(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    done = Completion(
+        blocks=[{"type": "text", "text": "done"}],
+        text="done",
+        tokens_in=100,
+        tokens_out=20,
+        latency_ms=12,
+        raw_model="fake-model",
+    )
+    receipt = SimpleNamespace(
+        rung="rung1",
+        line=lambda: "[ratatosk] turn ok class=build rung=rung1 fake/fake-model",
+    )
+    receipt.provider = "fake"
+    receipt.model = "fake-model"
+    receipt.tokens_in = 100
+    receipt.tokens_out = 20
+    receipt.outcome = "ok"
+    inference = _fake_inference(lambda *a, **k: (done, receipt))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": {"handoff_id": "H1"},
+        }
+    )
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-5",
+        inference=inference,
+    )
+
+    assert line.startswith("[ratatosk] wake receipt")
+    assert "dispatch=PKT00001" in line
+    assert "app=hanuman" in line
+    assert "handoff=H1" in line
+    assert "class=build" in line
+    assert "outcome=ok" in line
+    (enter,) = mcp.named("session_enter")
+    assert enter["dispatch_id"] == "PKT00001"
+    assert mcp.named("dispatch_read") == [
+        {"app_id": "hanuman", "dispatch_id": "PKT00001"}
+    ]
+    (close,) = mcp.named("handoff_write_v4")
+    assert close["dispatch_id"] == "PKT00001"
+
+
+def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
+    """A ladder that only ever calls tools (never a final answer) is refused
+    by name at the turn cap, not stretched — and still closes and inks."""
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    monkeypatch.setattr(
+        crown._tools, "prompt_and_dispatch", lambda *a, **kw: "tool result"
+    )
+    tool_use = {"id": "t1", "name": "Read", "input": {"file_path": "/x"}}
+    calling = Completion(
+        blocks=[{"type": "tool_use", **tool_use}],
+        text="",
+        tokens_in=1,
+        tokens_out=1,
+        latency_ms=1,
+    )
+    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
+    inference = _fake_inference(lambda *a, **k: (calling, receipt))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": {"handoff_id": "H2"},
+        }
+    )
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-6",
+        inference=inference,
+        max_turns=2,
+    )
+
+    assert "outcome=budget_turns" in line
+    assert mcp.named("handoff_write_v4"), "still closes on a budget refusal"
+
+
+def test_run_wake_refuses_on_the_wall_clock_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+
+    def _never_called(*_a, **_kw):
+        raise AssertionError("inference.complete must not run past the deadline")
+
+    inference = _fake_inference(_never_called)
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": {"handoff_id": "H3"},
+        }
+    )
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-7",
+        inference=inference,
+        wall_clock_seconds=-1,
+    )
+
+    assert "outcome=budget_seconds" in line
+    assert mcp.named("handoff_write_v4")
+
+
+def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    done = Completion(
+        blocks=[{"type": "text", "text": "done"}],
+        text="done",
+        tokens_in=1,
+        tokens_out=1,
+        latency_ms=1,
+    )
+    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
+    inference = _fake_inference(lambda *a, **k: (done, receipt))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "some-unmapped-role"}},
+            "handoff_write_v4": {"handoff_id": "H4"},
+        }
+    )
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-8",
+        inference=inference,
+    )
+    assert "class=chat" in line
+
+
+def test_run_wake_calls_on_heartbeat_once_after_the_turn_loop(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    done = Completion(
+        blocks=[{"type": "text", "text": "done"}],
+        text="done",
+        tokens_in=1,
+        tokens_out=1,
+        latency_ms=1,
+    )
+    receipt = SimpleNamespace(rung="rung1", line=lambda: "[ratatosk] turn ok")
+    inference = _fake_inference(lambda *a, **k: (done, receipt))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": {"handoff_id": "H5"},
+        }
+    )
+    beats = []
+    crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="tr-9",
+        inference=inference,
+        on_heartbeat=lambda: beats.append(1),
+    )
+    assert beats == [1]
+
+
+# -- SeatDaemon wiring: crown_app_id, busy guard ----------------------------
+
+
+def test_crown_app_id_wires_the_bounded_crown_activation_by_default():
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
+    )
+    assert daemon.listener.activate == daemon._crown_activate
+
+
+def test_an_explicit_activate_still_overrides_crown_wiring():
+    def custom(env):
+        return "custom"
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
+        activate=custom,
+    )
+    assert daemon.listener.activate is custom
+
+
+def test_no_crown_app_id_keeps_the_honest_default_noop():
+    daemon = SeatDaemon(node="ratatosk", channel="fleet", mcp_call=lambda n, i: {})
+    assert daemon.listener.activate is default_activate
+
+
+def test_crown_activate_refuses_a_second_wake_as_busy_without_running_it():
+    mcp = _FakeMCP({"session_enter": _entered()})
+    daemon = SeatDaemon(
+        node="ratatosk", channel="fleet", mcp_call=mcp, crown_app_id="hanuman"
+    )
+    daemon._wake_busy = True
+
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(
+        to="ratatosk",
+        prompt="p",
+        intent="wake",
+        capabilities=[],
+        extra={"dispatch_id": "PKT1"},
+    )
+    out = daemon._crown_activate(env)
+
+    assert "busy" in out
+    assert mcp.calls == [], "no session_enter while a wake is already running"
+
+
+def test_crown_activate_clears_the_busy_flag_after_the_wake_finishes(monkeypatch):
+    calls = []
+
+    def fake_run_wake(mcp_call, **kw):
+        calls.append(kw)
+        assert daemon._wake_busy is True, "busy while the wake itself runs"
+        return "[ratatosk] wake receipt ..."
+
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
+    )
+    monkeypatch.setattr(crown, "run_wake", fake_run_wake)
+
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(
+        to="ratatosk",
+        prompt="p",
+        intent="wake",
+        capabilities=[],
+        extra={"dispatch_id": "PKT1"},
+    )
+    out = daemon._crown_activate(env)
+
+    assert out == "[ratatosk] wake receipt ..."
+    assert daemon._wake_busy is False, "cleared once the wake returns"
+    assert calls[0]["dispatch_id"] == "PKT1"
+    assert calls[0]["app_id"] == "hanuman"
+
+
+def test_wake_message_with_a_dispatch_id_routes_through_crown_run_wake(monkeypatch):
+    """End to end through run_once, mirroring
+    test_wake_message_activates_the_seat_runtime but for the crown-wired
+    default rather than a hand-supplied ``activate``."""
+    captured = {}
+
+    def fake_run_wake(mcp_call, **kw):
+        captured.update(kw)
+        return f"[ratatosk] wake receipt trace={kw['trace_id']} dispatch={kw['dispatch_id']}"
+
+    monkeypatch.setattr(crown, "run_wake", fake_run_wake)
+
+    history = [
+        {
+            "id": 1,
+            "sender": "willow",
+            "content": json.dumps(
+                {
+                    "v": 1,
+                    "to": "ratatosk",
+                    "intent": "wake",
+                    "prompt": "packet-dispatch",
+                    "reply_channel": "fleet",
+                    "mode": "ollama",
+                    "capabilities": [],
+                    "nonce": "wk9",
+                    "trace_id": "tr-x",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "requires_confirm": False,
+                    "dispatch_id": "PKT9",
+                }
+            ),
+        }
+    ]
+
+    def mcp_call(tool, inputs):
+        if tool == "grove_get_history":
+            return {"result": list(history)}
+        return {}
+
+    daemon = SeatDaemon(
+        node="ratatosk", channel="fleet", mcp_call=mcp_call, crown_app_id="hanuman"
+    )
+    outputs = daemon.listener.run_once()
+
+    assert outputs == ["[ratatosk] wake receipt trace=tr-x dispatch=PKT9"]
+    assert captured["dispatch_id"] == "PKT9"
+    assert captured["app_id"] == "hanuman"
+    assert captured["trace_id"] == "tr-x"
+
+
+def test_wake_with_no_dispatch_id_is_acknowledged_and_refused_not_worked():
+    """No monkeypatch of crown.run_wake here — this drives the real refusal
+    path (dispatch_id falls through as None) and checks nothing beyond the
+    refusal line was called against the broker."""
+    history = [
+        {
+            "id": 1,
+            "sender": "willow",
+            "content": json.dumps(
+                {
+                    "v": 1,
+                    "to": "ratatosk",
+                    "intent": "wake",
+                    "prompt": "packet-dispatch",
+                    "reply_channel": "fleet",
+                    "mode": "ollama",
+                    "capabilities": [],
+                    "nonce": "wk10",
+                    "trace_id": "tr-y",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "requires_confirm": False,
+                }
+            ),
+        }
+    ]
+
+    calls = []
+
+    def mcp_call(tool, inputs):
+        calls.append(tool)
+        if tool == "grove_get_history":
+            return {"result": list(history)}
+        return {}
+
+    daemon = SeatDaemon(
+        node="ratatosk", channel="fleet", mcp_call=mcp_call, crown_app_id="hanuman"
+    )
+    outputs = daemon.listener.run_once()
+
+    assert len(outputs) == 1
+    assert "refused" in outputs[0] and "no dispatch_id" in outputs[0]
+    assert "session_enter" not in calls, "never entered the seat for an unworked wake"
+
+
+def test_main_wires_app_id_and_wake_flags(monkeypatch, capsys, tmp_path):
+    """CLI: ``ratatosk-listen --app-id <seat>`` wires the crown activation;
+    ``--wake-turns``/``--wake-seconds`` reach the SeatDaemon it builds."""
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "hanuman")
+    monkeypatch.delenv("WILLOW_HUMAN_ORCHESTRATOR", raising=False)
+    from ratatosk import daemon as _daemon_mod
+    from ratatosk import mcp_client
+
+    monkeypatch.setattr(mcp_client, "start", lambda: ([{"name": "extra"}], {"extra"}))
+    monkeypatch.setattr(mcp_client, "call", lambda n, i: {})
+    monkeypatch.setattr(mcp_client, "shutdown", lambda *a, **kw: True)
+
+    built = {}
+    real_daemon_cls = _daemon_mod.SeatDaemon
+
+    class Spy(real_daemon_cls):
+        def __init__(self, **kw):
+            built.update(kw)
+            super().__init__(**kw)
+
+    monkeypatch.setattr(_daemon_mod, "SeatDaemon", Spy)
+    monkeypatch.setattr(
+        Spy,
+        "run_forever",
+        lambda self, on_status=None: None,
+    )
+
+    _daemon_mod.main(
+        [
+            "--app-id",
+            "hanuman",
+            "--wake-turns",
+            "3",
+            "--wake-seconds",
+            "45",
+        ]
+    )
+
+    assert built["crown_app_id"] == "hanuman"
+    assert built["wake_turns"] == 3
+    assert built["wake_seconds"] == 45.0
+    assert built["mcp_extra_tools"] == [{"name": "extra"}]
+    assert built["mcp_names"] == {"extra"}
+    import os as _os
+
+    assert _os.environ["WILLOW_APP_ID"] == "hanuman"
+    assert _os.environ["RATATOSK_APP_ID"] == "hanuman"
+    assert _os.environ["WILLOW_AGENT_NAME"] == "hanuman"
+
+
+def test_main_refuses_app_id_willow_before_connecting(monkeypatch, tmp_path):
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.delenv("WILLOW_HUMAN_ORCHESTRATOR", raising=False)
+    from ratatosk import daemon as _daemon_mod
+
+    connected = []
+    monkeypatch.setattr(
+        "ratatosk.mcp_client.start", lambda: connected.append(1) or ([], set())
+    )
+
+    with pytest.raises(SystemExit) as info:
+        _daemon_mod.main(["--app-id", "willow"])
+    assert info.value.code == 2
+    assert connected == [], "refused before the transport was ever started"
