@@ -154,6 +154,20 @@ def enter(
 
     blockers = _blockers(result)
     entry_mode = str(result.get("entry_mode") or "")
+
+    # The broker auto-hands the oldest pending packet to a bare entry (gap
+    # 22c8c1aab079). A seat that did not ask for a packet does not take one:
+    # binding it here would make a listener's Ctrl-C write that packet a
+    # `turns: 0` handoff and close it out from under the human who owns it.
+    # Say the offer, keep it on the entry, leave the seat on the human path.
+    pending_offered = None if dispatch_id else _dispatch_id(result)
+    if pending_offered:
+        print(
+            f"  [seat] {app_id}: broker offered pending dispatch {pending_offered} "
+            f"— not requested, not bound (gap 22c8c1aab079)",
+            flush=True,
+        )
+    human_path = _is_human_entry(entry_mode) or not dispatch_id
     if blockers:
         lines = "; ".join(
             f"{b.get('id', '?')}: {b.get('summary', '')}" for b in blockers
@@ -161,9 +175,11 @@ def enter(
         # A specialist with blockers cannot do its packet — refuse before a
         # turn is spent. The human seat runs with blockers listed: the desk
         # itself does (an expired lease is the usual one), and refusing it
-        # here would lock the operator out of their own chair. Printed, kept
-        # on the entry, never silent.
-        if not _is_human_entry(entry_mode):
+        # here would lock the operator out of their own chair. A seat that
+        # asked for no packet is on the human path whatever the broker's
+        # entry_mode says (see pending_offered above). Printed, kept on the
+        # entry, never silent.
+        if not human_path:
             raise SeatRefused(
                 f"session_enter for {app_id} carries {len(blockers)} blocker(s): {lines}"
             )
@@ -172,12 +188,15 @@ def enter(
             flush=True,
         )
 
-    closeout = _closeout_tool(result, entry_mode)
+    # No packet requested → no packet closeout, whatever the broker names.
+    closeout = _closeout_tool(result, entry_mode) if dispatch_id else CLOSEOUT_HUMAN
     persona = str(result.get("persona") or "")
+    if pending_offered:
+        result = {**result, "pending_offered": pending_offered}
     return SeatEntry(
         app_id=app_id,
         session_id=session_id,
-        dispatch_id=dispatch_id or _dispatch_id(result),
+        dispatch_id=dispatch_id or None,
         entry_mode=entry_mode,
         persona=persona,
         job=str(result.get("job") or ""),

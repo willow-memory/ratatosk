@@ -939,11 +939,14 @@ def main() -> None:
                         f"  {_seat.ink(None, _seat.closed_receipt(entered, result))}",
                         flush=True,
                     )
-                if not mcp_client.shutdown():
-                    print(
-                        "  [mcp] stdio teardown did not finish within timeout",
-                        flush=True,
-                    )
+                try:
+                    if not mcp_client.shutdown():
+                        print(
+                            "  [mcp] stdio teardown did not finish within timeout",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(f"  [mcp] shutdown failed: {exc}", flush=True)
             if refused:
                 # Same refusal the termux boot script prints, and the same exit
                 # code: an unconfigured listener is a failure, not a quiet no-op.

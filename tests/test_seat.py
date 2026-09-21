@@ -185,7 +185,10 @@ def test_blockers_nested_under_orientation_are_read_too():
     del nested["blockers"]
     with pytest.raises(_seat.SeatRefused) as info:
         _seat.enter(
-            FakeMCP({"session_enter": nested}), app_id="hanuman", session_id="s"
+            FakeMCP({"session_enter": nested}),
+            app_id="hanuman",
+            session_id="s",
+            dispatch_id="PKT00001",
         )
     assert "session_unattested" in str(info.value)
 
@@ -235,13 +238,57 @@ def test_a_specialist_opened_by_a_person_runs_with_blockers_too():
 def test_a_count_with_no_items_still_refuses():
     mcp = FakeMCP({"session_enter": _entered(blockers={"count": 2, "items": []})})
     with pytest.raises(_seat.SeatRefused) as info:
-        _seat.enter(mcp, app_id="hanuman", session_id="s-1")
+        _seat.enter(mcp, app_id="hanuman", session_id="s-1", dispatch_id="PKT00001")
     assert "count=2" in str(info.value)
+
+
+def test_an_unrequested_dispatch_id_is_not_bound_and_closeout_stays_human(
+    tmp_path, monkeypatch, capsys
+):
+    """Loki 04C311E4: the broker auto-hands the oldest pending packet to a
+    bare entry (gap 22c8c1aab079). A seat that asked for no packet must not
+    bind it — else a listener's Ctrl-C writes that packet a turns:0 handoff."""
+    writer = _transcript(tmp_path, monkeypatch)
+    mcp = FakeMCP(
+        {
+            "session_enter": _entered(dispatch_id="A65EBE16"),
+            "session_handoff_write": {"path": "/h/bare.md"},
+        }
+    )
+    entry = _seat.enter(mcp, app_id="hanuman", session_id="s-1")
+    assert entry.dispatch_id is None
+    assert entry.closeout_tool == "session_handoff_write"
+    assert entry.raw["pending_offered"] == "A65EBE16"
+    assert entry.receipt()["dispatch_id"] is None
+    out = capsys.readouterr().out
+    assert "pending dispatch A65EBE16" in out and "not bound" in out
+    result = _seat.close(mcp, entry, writer.read_entries(), str(writer.path))
+    assert "error" not in result
+    assert mcp.named("session_handoff_write")
+    assert not mcp.named("handoff_write_v4"), "the offered packet is untouched"
+
+
+def test_an_unrequested_packet_with_blockers_runs_on_the_human_path(capsys):
+    """No packet asked for → the human path decides, whatever entry_mode the
+    broker stamped on its auto-handed offer."""
+    mcp = FakeMCP(
+        {
+            "session_enter": _entered(
+                blockers={"count": 1, "items": [{"id": "no_lease", "summary": "x"}]}
+            )
+        }
+    )
+    entry = _seat.enter(mcp, app_id="hanuman", session_id="s-1")
+    assert entry.dispatch_id is None and entry.blockers
+    assert "enters with 1 blocker(s)" in capsys.readouterr().out
 
 
 def test_closeout_follows_the_broker_then_the_entry_mode():
     dispatch = _seat.enter(
-        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s"
+        FakeMCP({"session_enter": _entered()}),
+        app_id="hanuman",
+        session_id="s",
+        dispatch_id="PKT00001",
     )
     assert dispatch.closeout_tool == "handoff_write_v4"
     human = _seat.enter(
@@ -272,6 +319,7 @@ def test_closeout_follows_the_broker_then_the_entry_mode():
         ),
         app_id="hanuman",
         session_id="s",
+        dispatch_id="PKT00001",
     )
     assert nested.closeout_tool == "handoff_write_v4"
 
@@ -302,7 +350,10 @@ def test_no_assignment_means_persona_then_repo():
 
 def test_the_entry_receipt_carries_the_seat_and_the_persona_hash():
     entry = _seat.enter(
-        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+        FakeMCP({"session_enter": _entered()}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT00001",
     )
     receipt = entry.receipt()
     assert receipt["event"] == "seat_entered"
@@ -566,8 +617,20 @@ def test_close_on_the_human_path_calls_session_handoff_write(tmp_path, monkeypat
 
 def test_close_reports_a_dispatch_closeout_with_no_dispatch_id(tmp_path, monkeypatch):
     writer = _transcript(tmp_path, monkeypatch)
-    mcp = FakeMCP({"session_enter": _entered(dispatch_id=None)})
-    entry = _seat.enter(mcp, app_id="hanuman", session_id="s-1")
+    # enter() no longer produces this shape (an unrequested packet stays on
+    # the human path); close() still guards it for an entry built elsewhere.
+    mcp = FakeMCP()
+    entry = _seat.SeatEntry(
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id=None,
+        entry_mode="dispatch",
+        persona=PERSONA,
+        job="",
+        not_job="",
+        assignment="",
+        closeout_tool="handoff_write_v4",
+    )
     result = _seat.close(mcp, entry, writer.read_entries(), str(writer.path))
     assert "needs a dispatch_id" in result["error"]
     assert not mcp.named("handoff_write_v4")
@@ -816,7 +879,16 @@ def test_blockers_are_printed_and_exit_2(fake_transport, monkeypatch, capsys):
         }
     )
     monkeypatch.setattr(
-        "sys.argv", ["ratatosk", "--mcp", "--local", "--app-id", "hanuman"]
+        "sys.argv",
+        [
+            "ratatosk",
+            "--mcp",
+            "--local",
+            "--app-id",
+            "hanuman",
+            "--dispatch-id",
+            "PKT00001",
+        ],
     )
     with pytest.raises(SystemExit) as info:
         crown.main()
@@ -927,6 +999,32 @@ def test_listen_closeout_failure_is_inked_and_does_not_block_teardown(
     out = capsys.readouterr().out
     assert "seat close FAILED app=hanuman" in out and "postgres_unavailable" in out
     assert fake_transport.torn["down"] == 1
+
+
+def test_listen_a_raising_shutdown_is_one_info_line_not_a_traceback(
+    fake_transport, monkeypatch, capsys
+):
+    """Loki 04C311E4: the listen finally guards shutdown() like the REPL's
+    _shutdown does — the closeout already ran, and the exit stays clean."""
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "hanuman")
+    fake_transport.answers["session_enter"] = _entered(entry_mode="human")
+    fake_transport.answers["session_handoff_write"] = {"path": "/h/listen.md"}
+
+    def run_forever(self, on_status=None):
+        raise KeyboardInterrupt
+
+    def explode(*a, **kw):
+        raise OSError("pipe gone")
+
+    monkeypatch.setattr("ratatosk.listener.BusListener.run_forever", run_forever)
+    monkeypatch.setattr(mcp_client, "shutdown", explode)
+    monkeypatch.setattr(
+        "sys.argv", ["ratatosk", "--mcp", "--listen", "--app-id", "hanuman"]
+    )
+    crown.main()
+    out = capsys.readouterr().out
+    assert "seat closed app=hanuman" in out
+    assert "[mcp] shutdown failed: pipe gone" in out
 
 
 def test_listen_with_a_refused_seat_tears_down_and_exits_2(
