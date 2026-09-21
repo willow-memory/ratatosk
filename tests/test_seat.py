@@ -568,7 +568,9 @@ def test_findings_each_carry_evidence_and_never_claim_a_test_or_lint_result(
         assert all(str(e).strip() for e in f["evidence"])
     text = json.dumps(findings).lower()
     assert "passed" not in text and "ruff" not in text and "clean" not in text
-    assert str(writer.path) in text
+    # Compared at the evidence level, not on the escaped blob: a Windows tmp
+    # path has an uppercase drive letter and backslashes json.dumps doubles.
+    assert any(str(writer.path) in str(e) for f in findings for e in f["evidence"])
 
 
 # -- close -----------------------------------------------------------------
