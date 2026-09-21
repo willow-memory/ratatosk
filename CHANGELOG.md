@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.9.0](https://github.com/willow-memory/ratatosk/compare/v1.8.0...v1.9.0) (2026-09-21)
+
+
+### Added
+
+* **crown:** --app-id enters the seat through willow-mcp, carries its persona, hands off at close ([6216cf7](https://github.com/willow-memory/ratatosk/commit/6216cf72f077908ac89d30cffb37a1e27d099961))
+* **seat:** crown enters via session_enter as a seat, carries the broker's persona, and hands off at close ([#50](https://github.com/willow-memory/ratatosk/issues/50)) ([7d5e560](https://github.com/willow-memory/ratatosk/commit/7d5e5609c607e78e1332a5c800cfd4faa6137e45))
+
+
+### Fixed
+
+* **crown:** a listening seat closes the way it entered; tool calls land in the transcript; the human seat runs with blockers listed ([f1ea3c4](https://github.com/willow-memory/ratatosk/commit/f1ea3c494a567a4d4a42394d1f62643807d30d2d))
+* **seat:** an unrequested dispatch_id is offered, not bound ([2a8c550](https://github.com/willow-memory/ratatosk/commit/2a8c55075884ca2a1beeff7664df3d8276be68dc))
+
 ## [1.8.0](https://github.com/willow-memory/ratatosk/compare/v1.7.1...v1.8.0) (2026-09-21)
 
 
