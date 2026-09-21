@@ -23,6 +23,8 @@ from ratatosk.history import (
     search_sessions,
 )
 from ratatosk.hooks import HookRuntime
+from ratatosk.inference import InferenceRouter, LadderRefused
+from ratatosk.ladder import LadderError
 from ratatosk.permission import check as _permission_check
 from ratatosk.policy import PolicyStore, shadowed_rules, subject_field
 from ratatosk.redact import redact
@@ -313,6 +315,10 @@ class RuntimeState:
     policy: PolicyStore
     hooks: HookRuntime
     resumed_from: str | None = None
+    #: The ladder walker (ratatosk.inference). ``None`` only in tests that
+    #: exercise the router without a model; ``_run_turn`` refuses without it.
+    inference: object | None = None
+    task_class: str = "chat"
 
 
 class CommandRouter:
@@ -354,6 +360,8 @@ class CommandRouter:
         print(f"  turns      : {len(self.state.history) // 2}")
         print(f"  jsonl      : {self.state.writer.path}")
         print(f"  model      : {self.state.model}")
+        if self.state.inference is not None:
+            print(f"  rung       : {self.state.inference.describe_current()}")
         print(f"  mcp tools  : {len(self.state.mcp_names)}")
         print(f"  policy     : {self.state.policy.path}")
         print(f"  hooks cfg  : {self.state.hooks.config_path}")
@@ -415,6 +423,16 @@ class CommandRouter:
         ]
         for key, value in checks:
             print(f"  {key:12}: {value}")
+        # The ladder, rung by rung: usable | no-key | stale-verify | refused,
+        # each with its reason. The old `api_key` line above answered for one
+        # provider; this answers for all of them without naming a value.
+        inference = self.state.inference
+        if inference is None:
+            print("  ladder      : not loaded")
+            return False
+        print(f"  ladder      : {inference.ladder.path or '(in-memory)'}")
+        for name, status, reason in inference.doctor_rows():
+            print(f"    {name:12} {status:12} {reason}")
         return False
 
     def _cmd_export(self, arg: str) -> bool:
@@ -549,42 +567,47 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
     state.writer.write_user(user_input)
     state.history.append({"role": "user", "content": user_input})
 
-    if state.args.local:
-        from ratatosk import ollama
+    inference = state.inference
+    if inference is None:
+        raise RuntimeError(
+            "no inference router — crown.main builds one from the ladder"
+        )
 
-        messages = [{"role": "system", "content": state.system_prompt}] + state.history
-        text = ollama.chat(messages, model=state.model)
-        print(text)
-        state.writer.write_assistant(text)
-        state.history.append({"role": "assistant", "content": text})
-        state.history, compacted = _compact(state.history, state)
-        if compacted:
-            _record_compaction(state, compacted)
-        return
-
+    # One loop for every dialect. The ladder walker returns Anthropic-shaped
+    # blocks whichever rung answered, so the tool loop below does not know or
+    # care whether groq, ollama or the SDK wrote them. The Anthropic client
+    # streams to stdout itself (its `echo`); the others print when they land.
     while True:
-        response_text = ""
-        with state.client.messages.stream(
-            model=state.model,
-            max_tokens=8192,
-            system=state.system_prompt,
-            messages=state.history,
-            tools=state.all_tools,
-        ) as stream:
-            for chunk in stream.text_stream:
-                print(chunk, end="", flush=True)
-                response_text += chunk
-            final = stream.get_final_message()
-
+        try:
+            completion, receipt = inference.complete(
+                state.system_prompt, state.history, state.all_tools
+            )
+        except LadderRefused as exc:
+            # The receipt is already inked (JSONL + Grove). The user turn stays
+            # in history so the operator can fix the rung and retry.
+            print(f"\n  [ladder] {exc}", flush=True)
+            state.writer.write_system(f"[ladder refused] {exc}")
+            return
+        if not _echoed(inference):
+            print(completion.text, end="", flush=True)
         print()
-        assistant_content = final.message.content
-        state.writer.write_assistant(response_text)
+        # The receipt, once, on the terminal too — the inked line, not a
+        # paraphrase of it.
+        print(f"  {receipt.line()}", flush=True)
+        assistant_content = _non_empty(completion.blocks)
+        if assistant_content is None:
+            # A rung that answered nothing — no text, no tool call. An empty
+            # assistant message is not a message: the Anthropic API rejects
+            # an empty content list (400) on every later turn, so one blank
+            # answer from a free rung would poison the paid one until /clear.
+            # Nothing goes into history; the transcript records the blank.
+            note = f"[empty answer] {receipt.rung} returned no content"
+            print(f"  {note}", flush=True)
+            state.writer.write_system(note)
+            break
+        state.writer.write_assistant(completion.text)
         state.history.append({"role": "assistant", "content": assistant_content})
-        tool_uses = [
-            block
-            for block in assistant_content
-            if getattr(block, "type", None) == "tool_use"
-        ]
+        tool_uses = completion.tool_uses
         if not tool_uses:
             state.history, compacted = _compact(state.history, state)
             if compacted:
@@ -594,19 +617,43 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         tool_results = []
         for tu in tool_uses:
             result = _tools.prompt_and_dispatch(
-                tu.name,
-                tu.input,
+                tu["name"],
+                tu["input"],
                 state.args.trust,
                 state.mcp_names,
                 state.mcp_call,
                 policy_store=state.policy,
                 hook_runtime=state.hooks,
             )
-            print(f"  [tool:{tu.name}] → {str(result)[:120]}", flush=True)
+            print(f"  [tool:{tu['name']}] → {str(result)[:120]}", flush=True)
             tool_results.append(
-                {"type": "tool_result", "tool_use_id": tu.id, "content": str(result)}
+                {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+def _non_empty(blocks: list[dict]) -> list[dict] | None:
+    """The blocks worth keeping, or None when there is nothing to keep.
+
+    A text block with empty text is dropped too — the Anthropic API refuses
+    "text content blocks must be non-empty" the same way it refuses an
+    empty list.
+    """
+    kept = [
+        b for b in blocks if b.get("type") != "text" or str(b.get("text", "")).strip()
+    ]
+    return kept or None
+
+
+def _echoed(inference) -> bool:
+    """Did the rung that just answered already stream its text to stdout?
+
+    Only the Anthropic client streams; printing its text again would show
+    every answer twice.
+    """
+    current = getattr(inference, "current", None)
+    rung = getattr(current, "rung", None)
+    return getattr(rung, "dialect", None) == "anthropic"
 
 
 def _shutdown(state: RuntimeState) -> None:
@@ -685,7 +732,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Ratatosk — Willow platform session runtime"
     )
-    parser.add_argument("--model", default="claude-sonnet-4-6")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Force one model onto the first usable rung of the class ladder. "
+            "Unset: each rung's own model for the class."
+        ),
+    )
+    parser.add_argument(
+        "--class",
+        dest="task_class",
+        default="chat",
+        choices=[
+            "build",
+            "audit",
+            "research",
+            "operate",
+            "witness",
+            "chat",
+            "summarize",
+            "classify",
+        ],
+        help="Task class — selects the provider ladder (provider_ladder.json)",
+    )
     parser.add_argument(
         "--trust",
         action="store_true",
@@ -729,8 +799,6 @@ def main() -> None:
     ensure_history_db()
     policy = PolicyStore()
     hooks = HookRuntime()
-    use_local = args.local
-    model = os.environ.get("OLLAMA_MODEL", "llama3.2:1b") if use_local else args.model
 
     mcp_names: set[str] = set()
     mcp_extra_tools: list[dict] = []
@@ -780,21 +848,46 @@ def main() -> None:
                 raise SystemExit(1)
             return
 
-    if not use_local:
-        api_key = _load_api_key()
-        if not api_key:
-            print("ERROR: ANTHROPIC_API_KEY not found.")
-            sys.exit(1)
-        try:
-            import anthropic
-        except ImportError:
-            print("ERROR: pip install 'willow-ratatosk[cloud]'")
-            sys.exit(1)
-        client = anthropic.Anthropic(api_key=api_key)
-    else:
-        client = None
-
     writer = _session.SessionWriter(cwd=str(Path.cwd()))
+
+    # The ladder decides which provider answers; the environment only holds
+    # the keys the ladder names. The credentials-file fallback for the
+    # Anthropic key survives as an overlay on a *copy* of the environment —
+    # `_load_api_key`'s rule (a source, never a destination) still holds.
+    env = dict(os.environ)
+    if not env.get("ANTHROPIC_API_KEY"):
+        file_key = _load_api_key()
+        if file_key:
+            env["ANTHROPIC_API_KEY"] = file_key
+    try:
+        inference = InferenceRouter.from_args(
+            task_class=args.task_class,
+            model=args.model,
+            local=args.local,
+            writer=writer,
+            echo=lambda chunk: print(chunk, end="", flush=True),
+            env=env,
+        )
+    except LadderError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
+    if not inference.resolution.usable:
+        # Say so at the prompt, not on the first turn: every rung of this
+        # class is unusable and each has said why.
+        print(f"ERROR: no usable rung for class {args.task_class!r}:")
+        for v in inference.resolution.skipped:
+            print(f"  {v.status:12} {v.reason}")
+        sys.exit(1)
+    if inference.resolution.forced_unplaced:
+        # `--model claude-…` on a ladder whose usable rungs are ollama and
+        # groq: refuse here, naming the mismatch, rather than send the id to
+        # a rung that cannot serve it and refuse every turn on its 404.
+        print(f"ERROR: {inference.resolution.forced_unplaced}")
+        print("  pick a --class whose ladder names that dialect, or set its key")
+        sys.exit(1)
+    first = inference.resolution.usable[0]
+    model = first.model or ""
+
     state = RuntimeState(
         args=args,
         model=model,
@@ -804,9 +897,11 @@ def main() -> None:
         all_tools=_tools.BASE_TOOLS + mcp_extra_tools,
         mcp_names=mcp_names,
         mcp_call=mcp_call,
-        client=client,
+        client=None,
         policy=policy,
         hooks=hooks,
+        inference=inference,
+        task_class=args.task_class,
     )
     router = CommandRouter(state)
     start_receipt = _grove.session_started(writer.session_id, model)
@@ -817,7 +912,10 @@ def main() -> None:
         print(f"  [grove] {start_receipt.detail}", flush=True)
 
     trust_label = "trust=on" if args.trust else "trust=off"
-    print(f"\nRatatosk  [{model}]  [{trust_label}]  session:{writer.session_id[:8]}…")
+    print(
+        f"\nRatatosk  [{args.task_class}: {first.rung.name}/{model}]  [{trust_label}]  "
+        f"session:{writer.session_id[:8]}…"
+    )
     print("Type /help for commands.\n")
 
     try:

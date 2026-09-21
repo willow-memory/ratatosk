@@ -1,0 +1,135 @@
+{
+  "_doc": [
+    "The seat runtime's inference ladder — sealed decision c8572a92's sibling, pair 3613d55e (seat-runtime-provider-ladder-2026-09-20).",
+    "Data, not code: a rung is (provider, dialect, base_url, key_env, models, budget, issued). Free tiers first, Ollama floor, Anthropic by task class.",
+    "A 429 / quota / timeout on one rung steps to the next in the class's ladder; every wake inks provider+model+rung+tokens so 'cheapest-capable' is measured, not assumed.",
+    "Keys are NAMES here, never values. Values live only in $WILLOW_HOME/env on the host (Kart's kart_env prefix list) — this file must never hold one.",
+    "Free-tier limits move; `budget` is what the operator believed at `verify_at`, and the ladder should refuse to trust a rung whose verify_at is older than rotate_after_days.",
+    "status: unmeasured until the first wake inks a receipt on that rung; the steward tick may flip it to measured/degraded from receipts.",
+    "Every rung a class names must carry a models.<class> entry; ratatosk.ladder refuses the file otherwise (a rung with no model for the class could never be tried, and a silent skip would hide the hole)."
+  ],
+  "version": 1,
+  "rotate_after_days": 90,
+  "rungs": {
+    "groq": {
+      "provider": "groq",
+      "dialect": "openai",
+      "base_url": "https://api.groq.com/openai/v1",
+      "key_env": "GROQ_API_KEY",
+      "models": {
+        "build": "llama-3.3-70b-versatile",
+        "research": "llama-3.3-70b-versatile",
+        "fast": "llama-3.1-8b-instant",
+        "operate": "llama-3.1-8b-instant",
+        "witness": "llama-3.1-8b-instant",
+        "chat": "llama-3.1-8b-instant",
+        "summarize": "llama-3.1-8b-instant"
+      },
+      "budget": {"tier": "free", "unit": "requests/day", "note": "per-model RPM/RPD/TPM caps; verify in console"},
+      "issued": "2026-09-20",
+      "verify_at": "2026-09-20",
+      "status": "unmeasured"
+    },
+    "cerebras": {
+      "provider": "cerebras",
+      "dialect": "openai",
+      "base_url": "https://api.cerebras.ai/v1",
+      "key_env": "CEREBRAS_API_KEY",
+      "models": {
+        "build": "llama-3.3-70b"
+      },
+      "budget": {"tier": "free", "unit": "tokens/day", "note": "daily token cap; verify in console"},
+      "issued": "2026-09-20",
+      "verify_at": "2026-09-20",
+      "status": "unmeasured"
+    },
+    "openrouter": {
+      "provider": "openrouter",
+      "dialect": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "key_env": "OPENROUTER_API_KEY",
+      "models": {
+        "build": "meta-llama/llama-3.3-70b-instruct:free",
+        "research": "google/gemini-2.5-flash:free"
+      },
+      "budget": {"tier": "free", "unit": "requests/day", "note": ":free models only; OpenRouter's usage page is the spend view for every rung it fronts"},
+      "issued": "2026-09-20",
+      "verify_at": "2026-09-20",
+      "status": "unmeasured"
+    },
+    "gemini": {
+      "provider": "google-ai-studio",
+      "dialect": "openai",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "key_env": "GEMINI_API_KEY",
+      "models": {
+        "research": "gemini-2.5-flash",
+        "audit": "gemini-2.5-pro"
+      },
+      "budget": {"tier": "free", "unit": "requests/day", "note": "Flash has the generous free tier; Pro is small — verify; key should be API-restricted to Generative Language"},
+      "issued": "2026-09-20",
+      "verify_at": "2026-09-20",
+      "status": "unmeasured"
+    },
+    "huggingface": {
+      "provider": "huggingface-inference-providers",
+      "dialect": "openai",
+      "base_url": "https://router.huggingface.co/v1",
+      "key_env": "HF_API_KEY",
+      "models": {
+        "build": "meta-llama/Llama-3.3-70B-Instruct"
+      },
+      "budget": {"tier": "free", "unit": "credits/month", "note": "small monthly credit, routes to several backends — the variety rung, not a volume one; token should be fine-grained inference-only"},
+      "issued": "pre-2026-09-20",
+      "verify_at": "2026-09-20",
+      "status": "unmeasured"
+    },
+    "ollama": {
+      "provider": "ollama",
+      "dialect": "ollama",
+      "base_url": "http://127.0.0.1:11434",
+      "key_env": null,
+      "models": {
+        "fast": "llama3.2:3b",
+        "classify": "llama3.2:3b",
+        "operate": "llama3.2:3b",
+        "witness": "llama3.2:3b",
+        "chat": "llama3.1:8b",
+        "summarize": "llama3.1:8b"
+      },
+      "budget": {"tier": "local", "unit": null, "note": "the floor: always reachable, never a builder"},
+      "issued": null,
+      "verify_at": null,
+      "status": "measured"
+    },
+    "anthropic": {
+      "provider": "anthropic",
+      "dialect": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "key_env": "ANTHROPIC_API_KEY",
+      "models": {
+        "build": "claude-sonnet-5",
+        "audit": "claude-opus-5"
+      },
+      "budget": {"tier": "paid", "unit": "usd", "note": "by task class only where the tiering ruling earns it (c9ca1a09 Sonnet-build / Opus-audit); the rung that costs money is the rung that must be inked hardest"},
+      "issued": null,
+      "verify_at": null,
+      "status": "measured"
+    }
+  },
+  "classes": {
+    "build":     ["cerebras", "groq", "openrouter", "huggingface", "anthropic"],
+    "audit":     ["gemini", "anthropic"],
+    "research":  ["gemini", "openrouter", "groq"],
+    "operate":   ["groq", "ollama"],
+    "witness":   ["groq", "ollama"],
+    "chat":      ["ollama", "groq"],
+    "summarize": ["ollama", "groq"],
+    "classify":  ["ollama"]
+  },
+  "_classes_doc": [
+    "Order within a class is the fall-through order. 'audit' keeps a cross-model rung above the builder's ladder on purpose: an audit on the same free 70b that built the thing is not an audit.",
+    "Names match dispatch task_class / the envelope task classes (build-work-order -> build, auditor -> audit, librarian -> research, operator -> operate, witness -> witness).",
+    "xAI/Grok is not a rung: console.x.ai went paid (operator, 2026-09-20)."
+  ]
+}

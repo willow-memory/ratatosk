@@ -196,3 +196,12 @@ def session_ended(session_id: str, turns: int, jsonl_path: str) -> GroveReceipt:
     return send(
         f"[ratatosk] session ended — {session_id[:8]} turns={turns} jsonl={jsonl_path}"
     )
+
+
+def turn_receipt(line: str) -> GroveReceipt:
+    """One model call's receipt — provider/model/rung/tokens — on the bus.
+
+    The caller (``ratatosk.inference``) renders the line; this only posts it,
+    so the same words land in the JSONL and on the channel.
+    """
+    return send(line)
