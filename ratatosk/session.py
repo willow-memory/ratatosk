@@ -64,6 +64,18 @@ class SessionWriter:
     def write_system(self, text: str) -> None:
         self.write(self._entry("system", message={"role": "system", "content": text}))
 
+    def write_tool(self, name: str, tool_use_id: str, result_chars: int) -> None:
+        """One tool call, as its own entry type — the name and the size of what
+        came back, never the arguments or the result (both can carry secrets
+        and both are already in the model's history). The seat closeout
+        counts these; before this row existed the transcript did not know a
+        tool had been called at all."""
+        self.write(
+            self._entry(
+                "tool", name=name, tool_use_id=tool_use_id, result_chars=result_chars
+            )
+        )
+
     def write_receipt(self, receipt: dict) -> None:
         """A model-call receipt (ratatosk.inference.TurnReceipt) as its own
         entry type — provider/model/rung/tokens per call, distinct from the

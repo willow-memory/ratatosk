@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -170,6 +171,29 @@ def test_blockers_refuse_the_seat_and_are_named():
 
 
 def test_blockers_nested_under_orientation_are_read_too():
+    """A specialist opened through the human path still carries its blockers
+    one level down; the same shape refuses a dispatch entry."""
+    nested = _entered(
+        blockers=None,
+        orientation={
+            "blockers": {
+                "count": 1,
+                "items": [{"id": "session_unattested", "summary": "x"}],
+            }
+        },
+    )
+    del nested["blockers"]
+    with pytest.raises(_seat.SeatRefused) as info:
+        _seat.enter(
+            FakeMCP({"session_enter": nested}), app_id="hanuman", session_id="s"
+        )
+    assert "session_unattested" in str(info.value)
+
+
+def test_the_human_seat_runs_with_blockers_listed(capsys):
+    """Loki 32A3263E finding 3: the desk itself runs with an expired lease
+    listed; refusing the human path here would lock the operator out of
+    their own chair. Printed, kept on the entry, never silent."""
     human = {
         "entry_mode": "human_orchestrator",
         "persona": "You are Willow.",
@@ -177,13 +201,35 @@ def test_blockers_nested_under_orientation_are_read_too():
         "orientation": {
             "blockers": {
                 "count": 1,
-                "items": [{"id": "session_unattested", "summary": "x"}],
+                "items": [{"id": "no_egress_lease", "summary": "no active lease"}],
             }
         },
     }
-    with pytest.raises(_seat.SeatRefused) as info:
-        _seat.enter(FakeMCP({"session_enter": human}), app_id="willow", session_id="s")
-    assert "session_unattested" in str(info.value)
+    entry = _seat.enter(
+        FakeMCP({"session_enter": human}), app_id="willow", session_id="s"
+    )
+    assert entry.entry_mode == "human_orchestrator"
+    assert [b["id"] for b in entry.blockers] == ["no_egress_lease"]
+    out = capsys.readouterr().out
+    assert "enters with 1 blocker(s)" in out and "no_egress_lease" in out
+
+
+def test_a_specialist_opened_by_a_person_runs_with_blockers_too():
+    entry = _seat.enter(
+        FakeMCP(
+            {
+                "session_enter": _entered(
+                    entry_mode="human",
+                    dispatch_id=None,
+                    closeout_tools=["session_handoff_write"],
+                    blockers={"count": 1, "items": [{"id": "x", "summary": "y"}]},
+                )
+            }
+        ),
+        app_id="ada",
+        session_id="s",
+    )
+    assert entry.blockers and entry.closeout_tool == "session_handoff_write"
 
 
 def test_a_count_with_no_items_still_refuses():
@@ -267,6 +313,21 @@ def test_the_entry_receipt_carries_the_seat_and_the_persona_hash():
     assert PERSONA not in json.dumps(receipt), "the hash rides, not the text"
 
 
+def test_the_persona_hash_names_the_prompt_bytes_not_the_brokers_newline():
+    """Loki 32A3263E cosmetic: hash what is used. The system prompt heads
+    with the stripped persona; the receipt hashes that same text."""
+    import hashlib
+
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
+    )
+    prompt = entry.system_prompt("repo")
+    used = PERSONA.strip()
+    assert prompt.startswith(used), "the stripped persona is what heads the prompt"
+    assert entry.persona_sha256 == hashlib.sha256(used.encode("utf-8")).hexdigest()
+    assert entry.persona_sha256 != hashlib.sha256(PERSONA.encode("utf-8")).hexdigest()
+
+
 def test_ink_writes_the_jsonl_row_and_records_the_bus_answer(tmp_path, monkeypatch):
     monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
     monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
@@ -317,6 +378,11 @@ def _transcript(tmp_path, monkeypatch) -> _session.SessionWriter:
         }
     )
     writer.write_assistant("done: the thing")
+    # The rows crown._run_turn writes per dispatched tool — the real writer
+    # method, not a hand-shaped dict (Loki 32A3263E finding 2).
+    writer.write_tool("willow_web_search", "toolu_1", 512)
+    writer.write_tool("store_get", "toolu_2", 88)
+    writer.write_tool("willow_web_search", "toolu_3", 0)
     writer.write_user("and another")
     writer.write_receipt({"outcome": "refused", "reason": "ladder exhausted"})
     writer.write_receipt(
@@ -346,6 +412,92 @@ def test_summarize_rolls_the_transcript_up(tmp_path, monkeypatch):
     }
     assert summary["tokens_in"] == 100 and summary["tokens_out"] == 20
     assert summary["next_bite"] == "next: open the PR"
+    assert summary["tools"] == {"store_get": 1, "willow_web_search": 2}
+
+
+def test_run_turn_writes_a_tool_row_the_closeout_can_count(tmp_path, monkeypatch):
+    """End to end: a dispatched tool call in _run_turn lands as a `tool` row in
+    the JSONL — name, id and result size, never the arguments or the result —
+    and summarize() counts it. Before this row the transcript did not know a
+    tool had been called at all, and the tools finding was dead on a real
+    session."""
+    monkeypatch.setenv("RATATOSK_SESSION_DIR", str(tmp_path))
+    writer = _session.SessionWriter(cwd=str(tmp_path))
+
+    tool_use = {"id": "toolu_9", "name": "store_get", "input": {"k": "v"}}
+    calling = SimpleNamespace(
+        text="", blocks=[{"type": "tool_use", **tool_use}], tool_uses=[tool_use]
+    )
+    done = SimpleNamespace(
+        text="ok", blocks=[{"type": "text", "text": "ok"}], tool_uses=[]
+    )
+    receipt = SimpleNamespace(rung="r", line=lambda: "[ratatosk] turn ok")
+    answers = iter([(calling, receipt), (done, receipt)])
+    inference = SimpleNamespace(current=None, complete=lambda *_a: next(answers))
+
+    state = RuntimeState(
+        args=argparse.Namespace(
+            trust=True, mcp=False, listen=False, deposit=False, local=True
+        ),
+        model="m",
+        writer=writer,
+        history=[],
+        system_prompt="x",
+        all_tools=[],
+        mcp_names=set(),
+        mcp_call=None,
+        client=None,
+        policy=PolicyStore(),
+        hooks=HookRuntime(),
+        inference=inference,
+    )
+    monkeypatch.setattr(
+        crown._tools,
+        "prompt_and_dispatch",
+        lambda name, inp, *a, **kw: "SECRET-RESULT-xyz",
+    )
+    crown._run_turn(state, "look it up")
+    rows = [e for e in writer.read_entries() if e["type"] == "tool"]
+    assert rows == [
+        {
+            **{
+                k: rows[0][k]
+                for k in (
+                    "uuid",
+                    "parentUuid",
+                    "timestamp",
+                    "isSidechain",
+                    "sessionId",
+                    "cwd",
+                    "version",
+                )
+            },
+            "type": "tool",
+            "name": "store_get",
+            "tool_use_id": "toolu_9",
+            "result_chars": len("SECRET-RESULT-xyz"),
+        }
+    ]
+    assert _transcript_leaks(writer.path, "SECRET-RESULT-xyz", '"k": "v"') == []
+    assert _seat.summarize(writer.read_entries())["tools"] == {"store_get": 1}
+
+
+def _transcript_leaks(path, *secrets: str) -> list[str]:
+    """The secrets that DID reach the JSONL on disk — a tool row carries the
+    name and the result size, never the arguments or the result. Empty means
+    nothing leaked."""
+    text = path.read_text(encoding="utf-8")
+    return [s for s in secrets if s in text]
+
+
+def test_the_transcript_leak_scan_fires_on_a_planted_secret(tmp_path):
+    """Planted: a row that carries the result verbatim must be reported by
+    the helper the tool-row test relies on."""
+    leaky = tmp_path / "leaky.jsonl"
+    leaky.write_text('{"type":"tool","result":"SECRET-RESULT-xyz"}\n', encoding="utf-8")
+    assert _transcript_leaks(leaky, "SECRET-RESULT-xyz", "never-there") == [
+        "SECRET-RESULT-xyz"
+    ]
 
 
 def test_findings_each_carry_evidence_and_never_claim_a_test_or_lint_result(
@@ -712,12 +864,68 @@ def test_listen_with_app_id_enters_as_the_seat_and_the_node_is_the_seat(
     monkeypatch.setattr(
         "sys.argv", ["ratatosk", "--mcp", "--listen", "--app-id", "hanuman"]
     )
+    # A listener enters without a packet; the broker answers the human shape.
+    fake_transport.answers["session_enter"] = _entered(
+        entry_mode="human", dispatch_id=None, closeout_tools=["session_handoff_write"]
+    )
+    fake_transport.answers["session_handoff_write"] = {"path": "/h/listen.md"}
     crown.main()
     (enter,) = fake_transport.named("session_enter")
     assert enter["app_id"] == "hanuman"
     assert enter["session_id"].startswith("hanuman-listen-")
     assert nodes == ["hanuman"], "the listener's node is the seat, not 'ratatosk'"
-    assert "seat entered app=hanuman" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "seat entered app=hanuman" in out
+    # Loki 32A3263E finding 1: the listener leaves the way it came — the
+    # closeout runs on Ctrl-C, before the transport goes, and is inked.
+    (close,) = fake_transport.named("session_handoff_write")
+    assert close["app_id"] == "hanuman"
+    assert close["session_id"] == enter["session_id"]
+    assert "seat closed app=hanuman" in out and "handoff=/h/listen.md" in out
+    names = [n for n, _ in fake_transport.calls]
+    assert names.index("session_handoff_write") > names.index("session_enter")
+    assert fake_transport.torn["down"] == 1
+
+
+def test_listen_closes_the_seat_even_when_the_channel_is_refused(
+    fake_transport, monkeypatch, capsys
+):
+    """The seat entered before BusListener refused the unset channel; the
+    refusal path must still close it (and still exit 1, as before)."""
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    fake_transport.answers["session_enter"] = _entered(
+        entry_mode="human", dispatch_id=None, closeout_tools=["session_handoff_write"]
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["ratatosk", "--mcp", "--listen", "--app-id", "hanuman"]
+    )
+    with pytest.raises(SystemExit) as info:
+        crown.main()
+    assert info.value.code == 1
+    assert fake_transport.named("session_handoff_write")
+    assert "seat closed app=hanuman" in capsys.readouterr().out
+    assert fake_transport.torn["down"] == 1
+
+
+def test_listen_closeout_failure_is_inked_and_does_not_block_teardown(
+    fake_transport, monkeypatch, capsys
+):
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "hanuman")
+    fake_transport.answers["session_enter"] = _entered(
+        entry_mode="human", dispatch_id=None, closeout_tools=["session_handoff_write"]
+    )
+    fake_transport.answers["session_handoff_write"] = {"error": "postgres_unavailable"}
+
+    def run_forever(self, on_status=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("ratatosk.listener.BusListener.run_forever", run_forever)
+    monkeypatch.setattr(
+        "sys.argv", ["ratatosk", "--mcp", "--listen", "--app-id", "hanuman"]
+    )
+    crown.main()
+    out = capsys.readouterr().out
+    assert "seat close FAILED app=hanuman" in out and "postgres_unavailable" in out
     assert fake_transport.torn["down"] == 1
 
 

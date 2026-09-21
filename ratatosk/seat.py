@@ -67,7 +67,10 @@ class SeatEntry:
 
     @property
     def persona_sha256(self) -> str:
-        return hashlib.sha256(self.persona.encode("utf-8")).hexdigest()
+        """Hash of the persona AS USED — the stripped text that heads the
+        system prompt — so the receipt names the prompt bytes, not the
+        broker's trailing newline."""
+        return hashlib.sha256(self.persona.strip().encode("utf-8")).hexdigest()
 
     def system_prompt(self, repo_prompt: str) -> str:
         """The broker's persona leads, the packet brief follows, the repo's
@@ -155,8 +158,18 @@ def enter(
         lines = "; ".join(
             f"{b.get('id', '?')}: {b.get('summary', '')}" for b in blockers
         )
-        raise SeatRefused(
-            f"session_enter for {app_id} carries {len(blockers)} blocker(s): {lines}"
+        # A specialist with blockers cannot do its packet — refuse before a
+        # turn is spent. The human seat runs with blockers listed: the desk
+        # itself does (an expired lease is the usual one), and refusing it
+        # here would lock the operator out of their own chair. Printed, kept
+        # on the entry, never silent.
+        if not _is_human_entry(entry_mode):
+            raise SeatRefused(
+                f"session_enter for {app_id} carries {len(blockers)} blocker(s): {lines}"
+            )
+        print(
+            f"  [seat] {app_id} enters with {len(blockers)} blocker(s): {lines}",
+            flush=True,
         )
 
     closeout = _closeout_tool(result, entry_mode)
@@ -174,6 +187,13 @@ def enter(
         blockers=blockers,
         raw=result,
     )
+
+
+def _is_human_entry(entry_mode: str) -> bool:
+    """The broker's human-path modes: ``human`` (a specialist seat opened by a
+    person) and ``human_orchestrator`` (the desk). Everything else — ``dispatch``
+    above all — is a specialist working a packet."""
+    return entry_mode.startswith("human")
 
 
 def _blockers(result: dict) -> list[dict]:
@@ -221,10 +241,11 @@ def summarize(entries: list[dict]) -> dict:
     """Roll a session transcript up into what a handoff can carry.
 
     Reads the JSONL entries ``SessionWriter`` wrote: user/assistant/system
-    turns and ``receipt`` rows (``TurnReceipt.as_dict``). Tool calls are read
-    off the assistant text's ``[tool:name]`` lines the REPL prints — the
-    transcript itself does not carry tool_use blocks — so the count is of
-    calls *announced*, which is the same number the terminal showed.
+    turns, ``receipt`` rows (``TurnReceipt.as_dict``), and ``tool`` rows
+    (``SessionWriter.write_tool`` — one per dispatched tool call, name and
+    result size only, written by ``crown._run_turn`` beside the terminal's
+    ``[tool:name]`` line). A transcript from before that row existed simply
+    has no tools to count.
     """
     turns = 0
     tools: Counter[str] = Counter()
@@ -280,7 +301,12 @@ def build_findings(summary: dict, entry: SeatEntry, jsonl_path: str) -> list[dic
     receipts. Nothing here claims a test result or a lint result; crown did
     not run any, and a claim it cannot back is exactly what the gate refuses.
     """
-    transcript = f"transcript: {jsonl_path}"
+    # A listening seat has no REPL and no JSONL; its session id is the record.
+    transcript = (
+        f"transcript: {jsonl_path}"
+        if jsonl_path
+        else f"no transcript (listener); session: {entry.session_id}"
+    )
     findings = [
         {
             "title": f"{entry.app_id} worked the session as {entry.entry_mode}",
@@ -320,6 +346,8 @@ def narrative(summary: dict, entry: SeatEntry) -> str:
         f"{entry.app_id} ({entry.entry_mode}) — {summary['turns']} turn(s), "
         f"{summary['calls_ok']} model call(s) ok, {summary['calls_refused']} refused."
     )
+    if summary["tools"]:
+        head += f" Tools: {sum(summary['tools'].values())} call(s)."
     if entry.dispatch_id:
         head = f"Dispatch {entry.dispatch_id}. " + head
     if summary["rungs"]:

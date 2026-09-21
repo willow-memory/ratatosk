@@ -635,6 +635,10 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
                 hook_runtime=state.hooks,
             )
             print(f"  [tool:{tu['name']}] → {str(result)[:120]}", flush=True)
+            try:
+                state.writer.write_tool(tu["name"], tu["id"], len(str(result)))
+            except Exception as exc:  # a record must not be able to end the turn
+                print(f"  [tool] row not written: {exc}", flush=True)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
@@ -879,6 +883,7 @@ def main() -> None:
             # A listening seat is a seat: it enters once, so the broker has a
             # session for the node the bus will address, and its posts carry
             # the seat's name. Activation on WAKE is slice 3 — not wired here.
+            entered: _seat.SeatEntry | None = None
             if args.app_id:
                 seat_id = f"{args.app_id}-listen-{os.getpid()}"
                 try:
@@ -920,6 +925,20 @@ def main() -> None:
             except ValueError as exc:
                 refused = str(exc)
             finally:
+                # A seat that entered leaves the way it came: the closeout
+                # runs before the transport goes, whichever way the loop
+                # ended (Ctrl-C, a refused channel, a crash). Entry and exit
+                # are symmetric or the broker keeps an open session per
+                # listener start.
+                if entered is not None:
+                    try:
+                        result = _seat.close(mcp_call, entered, [], "")
+                    except Exception as exc:
+                        result = {"error": f"closeout raised: {exc}"}
+                    print(
+                        f"  {_seat.ink(None, _seat.closed_receipt(entered, result))}",
+                        flush=True,
+                    )
                 if not mcp_client.shutdown():
                     print(
                         "  [mcp] stdio teardown did not finish within timeout",
