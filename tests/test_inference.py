@@ -226,6 +226,82 @@ def test_the_receipt_is_posted_to_grove_when_bound(writer, grove_posts):
     line = grove_posts[0]
     assert line.startswith("[ratatosk] turn ok class=build rung=2/3 b b/m tokens=10/2")
     assert "trail=a:rate_limited" in line
+    assert receipt.grove == "posted"
+    assert _receipts(writer)[0]["grove"] == "posted"
+
+
+def test_a_refused_grove_post_is_recorded_not_reported_as_posted(
+    writer, monkeypatch, capsys
+):
+    """Loki finding 2: grove.send never raises — it answers ok=False. The
+    answer is what the receipt records, and the terminal says so."""
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "willow")
+    grove.set_grove_sender(
+        lambda content: grove.GroveReceipt(
+            False, "grove_send_message denied: no grove_write"
+        )
+    )
+    try:
+        router, _ = _router({"a": [_ok()], "b": [], "c": []}, writer=writer)
+        _, receipt = router.complete("s", [{"role": "user", "content": "hi"}], [])
+    finally:
+        grove.set_grove_sender(None)
+    assert receipt.grove == "refused: grove_send_message denied: no grove_write"
+    assert _receipts(writer)[0]["grove"] == receipt.grove
+    assert "grove post refused" in capsys.readouterr().out
+
+
+def test_an_unbound_grove_is_recorded_as_skipped(writer, monkeypatch):
+    monkeypatch.delenv("RATATOSK_GROVE_CHANNEL", raising=False)
+    router, _ = _router({"a": [_ok()], "b": [], "c": []}, writer=writer)
+    _, receipt = router.complete("s", [{"role": "user", "content": "hi"}], [])
+    assert receipt.grove == "skipped"
+
+
+def test_a_client_that_crashes_is_still_inked_and_refuses(writer):
+    """Loki finding 1: only ProviderError was caught; any other exception out
+    of a client ended the turn with no receipt. The failure that most needs a
+    receipt is the one that would skip it."""
+    router, fakes = _router(
+        {"a": [KeyError("text")], "b": [_ok("never")], "c": []}, writer=writer
+    )
+    with pytest.raises(LadderRefused) as info:
+        router.complete("s", [{"role": "user", "content": "hi"}], [])
+    assert "a (crash): KeyError: 'text'" in str(info.value)
+    assert fakes["b"].calls == 0, "an unknown fault is not weather; it does not step"
+    inked = _receipts(writer)
+    assert len(inked) == 1 and inked[0]["outcome"] == "refused"
+    assert inked[0]["rung"] == "a"
+
+
+def test_a_crash_that_echoes_a_key_is_redacted_in_the_receipt(writer):
+    leaked = "sk-" + "c" * 40
+    router, _ = _router(
+        {"a": [RuntimeError(f"boom {leaked}")], "b": [], "c": []}, writer=writer
+    )
+    with pytest.raises(LadderRefused) as info:
+        router.complete("s", [{"role": "user", "content": "hi"}], [])
+    assert leaked not in str(info.value)
+    assert leaked not in json.dumps(_receipts(writer))
+
+
+def test_a_provider_error_reason_is_redacted_in_the_trail(writer):
+    leaked = "sk-" + "d" * 40
+    router, _ = _router(
+        {
+            "a": [
+                ProviderError(
+                    f"429 {leaked}", retryable=True, status=429, kind="rate_limited"
+                )
+            ],
+            "b": [_ok()],
+            "c": [],
+        },
+        writer=writer,
+    )
+    _, receipt = router.complete("s", [{"role": "user", "content": "hi"}], [])
+    assert leaked not in receipt.trail[0].reason
+    assert leaked not in json.dumps(_receipts(writer))
 
 
 def test_the_receipt_entry_is_its_own_jsonl_type(writer):
@@ -384,3 +460,41 @@ def test_run_turn_without_a_router_refuses_loudly(tmp_path, monkeypatch):
     state.inference = None
     with pytest.raises(RuntimeError, match="no inference router"):
         _run_turn(state, "go")
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [[], [{"type": "text", "text": ""}], [{"type": "text", "text": "  \n"}]],
+)
+def test_an_empty_answer_never_enters_history(tmp_path, monkeypatch, capsys, blocks):
+    """Loki finding 6: `{"role": "assistant", "content": []}` in history makes
+    the Anthropic rung 400 on every later turn until /clear. An empty answer
+    is recorded in the transcript and kept out of the model's view."""
+    router, _ = _router({"a": [_ok("", blocks=blocks)], "b": [], "c": []})
+    state = _state(tmp_path, monkeypatch, router)
+
+    _run_turn(state, "go")
+
+    assert state.history == [{"role": "user", "content": "go"}]
+    assert [e["type"] for e in state.writer.read_entries()] == [
+        "user",
+        "receipt",
+        "system",
+    ]
+    assert "[empty answer] a returned no content" in capsys.readouterr().out
+
+
+def test_a_client_crash_inside_run_turn_is_reported_not_raised(
+    tmp_path, monkeypatch, capsys
+):
+    router, _ = _router({"a": [ValueError("no json")], "b": [], "c": []})
+    state = _state(tmp_path, monkeypatch, router)
+
+    _run_turn(state, "go")  # does not raise
+
+    assert "[ladder] a (crash): ValueError: no json" in capsys.readouterr().out
+    assert [e["type"] for e in state.writer.read_entries()] == [
+        "user",
+        "receipt",
+        "system",
+    ]

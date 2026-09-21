@@ -144,12 +144,79 @@ def test_a_forced_model_lands_on_the_first_usable_rung_only():
         today=TODAY,
         model="claude-opus-5",
     )
-    free, paid = res.verdicts
+    paid, free = res.verdicts
     assert free.status == STATUS_NO_KEY, (
         "forcing a model does not make a keyless rung usable"
     )
     assert paid.model == "claude-opus-5"
     assert "model forced" in paid.reason
+    assert res.forced_unplaced == ""
+
+
+def test_a_forced_model_goes_to_a_rung_that_speaks_its_dialect_and_leads():
+    """Loki finding 3: `--model claude-…` on a ladder whose first usable rung
+    is Ollama must not send a Claude id to Ollama. The rung that serves it
+    moves to the head; the others keep the sealed order as fall-through."""
+    ladder = parse_ladder(_good())
+    res = ladder.resolve(
+        "build",
+        env={"FREE_API_KEY": "x", "ANTHROPIC_API_KEY": "y"},
+        today=TODAY,
+        model="claude-opus-5",
+    )
+    assert [(v.rung.name, v.model) for v in res.usable] == [
+        ("paid", "claude-opus-5"),
+        ("free", "free-70b"),
+    ]
+
+
+def test_a_forced_model_no_usable_rung_can_serve_is_named_not_sent():
+    ladder = parse_ladder(_good())
+    res = ladder.resolve(
+        "chat", env={"FREE_API_KEY": "x"}, today=TODAY, model="claude-opus-5"
+    )
+    assert [v.model for v in res.usable] == ["llama3.2:3b", "free-8b"], (
+        "every rung keeps its own model; nothing is forced onto the wrong dialect"
+    )
+    assert "claude-opus-5" in res.forced_unplaced
+    assert "anthropic" in res.forced_unplaced
+    assert "floor (ollama)" in res.forced_unplaced
+    assert "free (openai)" in res.forced_unplaced
+
+
+def test_a_forced_model_a_rung_already_lists_wins_over_the_name_shape():
+    """`free-8b` has no ':' and no 'claude', so by shape it is openai — and
+    the free rung lists it, so it lands there even on the chat ladder where
+    the floor comes first."""
+    ladder = parse_ladder(_good())
+    res = ladder.resolve(
+        "chat", env={"FREE_API_KEY": "x"}, today=TODAY, model="free-8b"
+    )
+    assert res.usable[0].rung.name == "free" and res.usable[0].model == "free-8b"
+
+
+def test_force_dialect_overrides_the_name_shape():
+    ladder = parse_ladder(_good())
+    res = ladder.resolve(
+        "chat", env={}, today=TODAY, model="llama3.2", force_dialect="ollama"
+    )
+    assert res.usable[0].rung.name == "floor" and res.usable[0].model == "llama3.2"
+    assert res.forced_unplaced == ""
+
+
+@pytest.mark.parametrize(
+    ("model", "dialect"),
+    [
+        ("claude-sonnet-5", "anthropic"),
+        ("claude-opus-4-1", "anthropic"),
+        ("llama3.2:3b", "ollama"),
+        ("llama-3.3-70b-versatile", "openai"),
+        ("meta-llama/llama-3.3-70b-instruct:free", "openai"),
+        ("gemini-2.5-flash", "openai"),
+    ],
+)
+def test_model_dialect_by_name_shape(model, dialect):
+    assert _ladder.model_dialect(model) == dialect
 
 
 def test_an_unknown_dialect_is_refused_not_tried():

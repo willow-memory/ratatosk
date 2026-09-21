@@ -31,6 +31,7 @@ from ratatosk.providers import (
     ProviderError,
     Request,
 )
+from ratatosk.redact import redact
 
 UNMEASURED = "unmeasured"
 
@@ -60,6 +61,9 @@ class TurnReceipt:
     trail: list[TrailStep] = field(default_factory=list)
     skipped: list[TrailStep] = field(default_factory=list)
     reason: str = ""
+    #: What the bus said: "posted" | "skipped" (no channel) | "refused: <why>".
+    #: Set by the inking; "" means the receipt was never inked at all.
+    grove: str = ""
     at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def as_dict(self) -> dict:
@@ -118,6 +122,7 @@ class InferenceRouter:
         factory: ClientFactory | None = None,
         writer=None,
         echo: Callable[[str], None] | None = None,
+        force_dialect: str | None = None,
     ):
         self.ladder = ladder
         self.task_class = task_class
@@ -129,7 +134,11 @@ class InferenceRouter:
         self._echo = echo
         self._clients: dict[str, Any] = {}
         self.resolution: Resolution = ladder.resolve(
-            task_class, env=self._env, today=today, model=model
+            task_class,
+            env=self._env,
+            today=today,
+            model=model,
+            force_dialect=force_dialect,
         )
         self.current: RungVerdict | None = None
         self.last_receipt: TurnReceipt | None = None
@@ -149,15 +158,26 @@ class InferenceRouter:
         env: Mapping[str, str] | None = None,
     ) -> InferenceRouter:
         ladder = ladder or load_ladder()
+        force_dialect = None
         if local:
             # ``--local`` keeps its meaning: Ollama only. Not a class of its
             # own in the file — it is the floor of several — so the ladder is
             # narrowed here to the ollama rung for whatever class was asked,
             # and OLLAMA_MODEL keeps its old meaning as the model when
-            # ``--model`` did not name one.
+            # ``--model`` did not name one. Whatever model that is, it is
+            # Ollama's — tag or no tag — so the name-shape guess is bypassed.
             ladder = _ollama_only(ladder, task_class)
             model = model or (env or os.environ).get("OLLAMA_MODEL") or None
-        return cls(ladder, task_class, model=model, env=env, writer=writer, echo=echo)
+            force_dialect = "ollama"
+        return cls(
+            ladder,
+            task_class,
+            model=model,
+            env=env,
+            writer=writer,
+            echo=echo,
+            force_dialect=force_dialect,
+        )
 
     def _default_factory(self, rung: Rung, model: str) -> Any:
         if rung.dialect == "openai":
@@ -211,7 +231,7 @@ class InferenceRouter:
                 client = self._client(verdict)
                 completion = client.complete(request)
             except ProviderError as exc:
-                step = TrailStep(verdict.rung.name, model, exc.kind, str(exc))
+                step = TrailStep(verdict.rung.name, model, exc.kind, redact(str(exc)))
                 if exc.retryable:
                     trail.append(step)
                     continue
@@ -225,7 +245,27 @@ class InferenceRouter:
                     rung_count=len(usable),
                     trail=trail,
                     skipped=skipped,
-                    reason=f"{verdict.rung.name} ({exc.kind}): {exc}",
+                    reason=f"{verdict.rung.name} ({exc.kind}): {step.reason}",
+                )
+                self._ink(receipt)
+                raise LadderRefused(receipt.reason, receipt) from exc
+            except Exception as exc:
+                # Anything else out of a client is that rung's defect (or ours)
+                # and still a wake that must be inked — the failure that most
+                # needs a receipt is the one that would otherwise skip it. It
+                # refuses rather than steps: an unknown fault is not weather.
+                what = redact(f"{exc.__class__.__name__}: {exc}")
+                receipt = TurnReceipt(
+                    task_class=self.task_class,
+                    outcome="refused",
+                    provider=verdict.rung.provider,
+                    model=model,
+                    rung=verdict.rung.name,
+                    rung_index=index,
+                    rung_count=len(usable),
+                    trail=trail,
+                    skipped=skipped,
+                    reason=f"{verdict.rung.name} (crash): {what}",
                 )
                 self._ink(receipt)
                 raise LadderRefused(receipt.reason, receipt) from exc
@@ -267,17 +307,30 @@ class InferenceRouter:
 
     def _ink(self, receipt: TurnReceipt) -> None:
         """Write the receipt everywhere it belongs. Never raises: a receipt
-        that could end the session would be a receipt nobody dares write."""
+        that could end the session would be a receipt nobody dares write.
+
+        Grove first, JSONL second, so the JSONL row records whether the bus
+        got the line. ``grove.send`` never raises — it answers with a
+        GroveReceipt whose ``ok`` is the only truth about the post — so the
+        answer is read, not the exception path.
+        """
         self.last_receipt = receipt
+        try:
+            posted = _grove.turn_receipt(receipt.line())
+        except Exception as exc:  # belt and braces; send() should not raise
+            posted = _grove.GroveReceipt(ok=False, detail=f"raised: {exc}")
+        if posted.skipped:
+            receipt.grove = "skipped"
+        elif posted.ok:
+            receipt.grove = "posted"
+        else:
+            receipt.grove = f"refused: {posted.detail}"
+            print(f"  [receipt] grove post refused: {posted.detail}", flush=True)
         if self._writer is not None:
             try:
                 self._writer.write_receipt(receipt.as_dict())
             except Exception as exc:
                 print(f"  [receipt] not written: {exc}", flush=True)
-        try:
-            _grove.turn_receipt(receipt.line())
-        except Exception as exc:
-            print(f"  [receipt] grove post failed: {exc}", flush=True)
 
     # -- reporting ---------------------------------------------------------
 

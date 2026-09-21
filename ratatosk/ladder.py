@@ -72,6 +72,10 @@ class RungVerdict:
 class Resolution:
     task_class: str
     verdicts: tuple[RungVerdict, ...]
+    #: Set when ``--model`` named a model and no usable rung of the class
+    #: speaks its dialect — the mismatch, stated, so the caller refuses at the
+    #: prompt instead of sending a Claude id to Ollama and reading a 404.
+    forced_unplaced: str = ""
 
     @property
     def usable(self) -> tuple[RungVerdict, ...]:
@@ -80,6 +84,21 @@ class Resolution:
     @property
     def skipped(self) -> tuple[RungVerdict, ...]:
         return tuple(v for v in self.verdicts if not v.usable)
+
+
+def model_dialect(model: str) -> str:
+    """Which dialect a model *name* belongs to, by the shape of the name.
+
+    ``claude-…`` is Anthropic's; an Ollama tag carries a ``:`` and no ``/``
+    (``llama3.2:3b``); everything else — ``org/model`` ids, ``llama-3.3-70b``
+    — is served by the OpenAI-compatible rungs. A rung that already lists the
+    model in its own ``models`` map wins regardless (``Ladder.resolve``).
+    """
+    if model.startswith("claude"):
+        return "anthropic"
+    if ":" in model and "/" not in model:
+        return "ollama"
+    return "openai"
 
 
 @dataclass(frozen=True)
@@ -167,23 +186,54 @@ class Ladder:
         env: Mapping[str, str] | None = None,
         today: date | None = None,
         model: str | None = None,
+        force_dialect: str | None = None,
     ) -> Resolution:
         """The class's rungs in fall-through order, each with its verdict.
 
-        ``model`` forces that model onto the first usable rung and leaves the
-        rest untouched — ``--model`` on the CLI. It does not make an unusable
-        rung usable.
+        ``model`` (``--model``) forces that model onto the first usable rung
+        that can serve it — one that lists the model itself, or whose dialect
+        matches the name's shape (``model_dialect``) — and leaves the rest on
+        their own models. It does not make an unusable rung usable, and it
+        does not land on a rung that cannot speak it: a Claude id never goes
+        to Ollama. When no usable rung can serve it, every rung keeps its own
+        model and ``forced_unplaced`` names the mismatch for the caller.
+        ``force_dialect`` overrides the name-shape guess — ``--local`` knows
+        every model it is handed is Ollama's, tag or no tag.
         """
         verdicts: list[RungVerdict] = []
         pending = model or None
+        wanted = force_dialect or (model_dialect(pending) if pending else "")
+        placed: int | None = None
         for rung in self.rungs_for(task_class):
-            v = self.verdict(
-                rung, task_class, env=env, today=today, forced_model=pending
+            serves = bool(pending) and (
+                pending in rung.models.values() or rung.dialect == wanted
             )
-            if pending and v.usable:
+            v = self.verdict(
+                rung,
+                task_class,
+                env=env,
+                today=today,
+                forced_model=pending if serves else None,
+            )
+            if serves and v.usable:
                 pending = None  # forced onto this rung; the rest keep their own
+                placed = len(verdicts)
             verdicts.append(v)
-        return Resolution(task_class=task_class, verdicts=tuple(verdicts))
+        if placed:
+            # The operator named a model; the rung that serves it goes first
+            # and the rest keep the sealed order behind it as the fall-through.
+            verdicts.insert(0, verdicts.pop(placed))
+        unplaced = ""
+        if pending:
+            usable = [v.rung for v in verdicts if v.usable]
+            speaks = ", ".join(f"{r.name} ({r.dialect})" for r in usable) or "none"
+            unplaced = (
+                f"--model {pending}: no usable rung in class {task_class!r} speaks "
+                f"its dialect ({wanted}); usable rungs: {speaks}"
+            )
+        return Resolution(
+            task_class=task_class, verdicts=tuple(verdicts), forced_unplaced=unplaced
+        )
 
     def doctor(
         self, *, env: Mapping[str, str] | None = None, today: date | None = None

@@ -594,7 +594,17 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
         # The receipt, once, on the terminal too — the inked line, not a
         # paraphrase of it.
         print(f"  {receipt.line()}", flush=True)
-        assistant_content = completion.blocks
+        assistant_content = _non_empty(completion.blocks)
+        if assistant_content is None:
+            # A rung that answered nothing — no text, no tool call. An empty
+            # assistant message is not a message: the Anthropic API rejects
+            # an empty content list (400) on every later turn, so one blank
+            # answer from a free rung would poison the paid one until /clear.
+            # Nothing goes into history; the transcript records the blank.
+            note = f"[empty answer] {receipt.rung} returned no content"
+            print(f"  {note}", flush=True)
+            state.writer.write_system(note)
+            break
         state.writer.write_assistant(completion.text)
         state.history.append({"role": "assistant", "content": assistant_content})
         tool_uses = completion.tool_uses
@@ -620,6 +630,19 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+def _non_empty(blocks: list[dict]) -> list[dict] | None:
+    """The blocks worth keeping, or None when there is nothing to keep.
+
+    A text block with empty text is dropped too — the Anthropic API refuses
+    "text content blocks must be non-empty" the same way it refuses an
+    empty list.
+    """
+    kept = [
+        b for b in blocks if b.get("type") != "text" or str(b.get("text", "")).strip()
+    ]
+    return kept or None
 
 
 def _echoed(inference) -> bool:
@@ -854,6 +877,13 @@ def main() -> None:
         print(f"ERROR: no usable rung for class {args.task_class!r}:")
         for v in inference.resolution.skipped:
             print(f"  {v.status:12} {v.reason}")
+        sys.exit(1)
+    if inference.resolution.forced_unplaced:
+        # `--model claude-…` on a ladder whose usable rungs are ollama and
+        # groq: refuse here, naming the mismatch, rather than send the id to
+        # a rung that cannot serve it and refuse every turn on its 404.
+        print(f"ERROR: {inference.resolution.forced_unplaced}")
+        print("  pick a --class whose ladder names that dialect, or set its key")
         sys.exit(1)
     first = inference.resolution.usable[0]
     model = first.model or ""

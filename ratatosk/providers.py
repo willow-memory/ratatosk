@@ -34,14 +34,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ratatosk.redact import redact
+
 DEFAULT_TIMEOUT = 120
 MAX_TOKENS = 8192
 
-#: HTTP statuses that mean "not now" rather than "not you".
-_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 402, 500, 502, 503, 504, 529})
-#: Words in a 4xx body that turn a refusal into a quota refusal. OpenRouter
-#: and HF answer credit exhaustion with 402/403 and say so in prose.
-_QUOTA_WORDS = ("quota", "credit", "insufficient", "rate limit", "rate_limit")
+#: Server-side "not now": the provider is up and refusing everyone.
+_OVERLOADED_STATUS = frozenset({500, 502, 503, 504, 529})
+#: Words in a 400 body that mean the bill, not the request. Only checked on
+#: 400 — a 401/403 is the key's problem whatever the prose says (Gemini
+#: answers a key restricted to the wrong API with 403 "insufficient
+#: permissions", which must surface, not step). 402 needs no words.
+_QUOTA_WORDS = ("quota", "credit")
 
 
 class ProviderError(Exception):
@@ -217,18 +221,36 @@ def from_openai_message(message: Mapping[str, Any]) -> list[dict]:
 
 
 def _classify_http(status: int, body: str) -> tuple[bool, str]:
-    lowered = body.lower()
+    """(retryable, kind) for an HTTP status — weather or the rung's defect.
+
+    Order is the point: the key's problems (401/403) are decided before any
+    prose in the body is read, so a provider that phrases a permission
+    refusal as "insufficient …" cannot talk its way into a quota step.
+    """
     if status == 429:
         return True, "rate_limited"
-    if status == 402 or (
-        status in (400, 403) and any(w in lowered for w in _QUOTA_WORDS)
-    ):
-        return True, "quota"
     if status in (401, 403):
         return False, "auth"
-    if status in _RETRYABLE_STATUS:
+    if status == 402:
+        return True, "quota"
+    if status == 400 and any(w in body.lower() for w in _QUOTA_WORDS):
+        return True, "quota"
+    if status == 408:
+        return True, "timeout"
+    if status in _OVERLOADED_STATUS:
         return True, "overloaded"
     return False, "bad_request"
+
+
+def _malformed(base_url: str, what: str) -> ProviderError:
+    """The rung answered, but not in the protocol. Its defect, not weather:
+    stepping past it would hide a proxy or an outage page behind whichever
+    rung happened to work next."""
+    return ProviderError(
+        f"{base_url} answered out of shape: {what}",
+        retryable=False,
+        kind="malformed",
+    )
 
 
 class OpenAICompatibleClient:
@@ -254,7 +276,7 @@ class OpenAICompatibleClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             body = ""
             try:
@@ -262,8 +284,11 @@ class OpenAICompatibleClient:
             except Exception:
                 pass
             retryable, kind = _classify_http(exc.code, body)
+            # A provider's error body can echo the key it rejected
+            # ("Incorrect API key provided: sk-…"); this string reaches the
+            # receipt, the bus and the terminal, so it is masked here, once.
             raise ProviderError(
-                f"HTTP {exc.code} from {self.base_url}: {body or exc.reason}",
+                f"HTTP {exc.code} from {self.base_url}: {redact(body) or exc.reason}",
                 retryable=retryable,
                 status=exc.code,
                 kind=kind,
@@ -287,6 +312,20 @@ class OpenAICompatibleClient:
                 retryable=True,
                 kind="transport",
             ) from exc
+        # A 200 that is not JSON — a proxy's HTML, an outage page, an empty
+        # body — is the rung out of shape, and it must land as a ProviderError
+        # so the walk inks it rather than crashing the turn around it.
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raise _malformed(
+                self.base_url, f"200 with a non-JSON body: {redact(raw[:120])!r}"
+            ) from None
+        if not isinstance(data, dict):
+            raise _malformed(
+                self.base_url, f"200 body is {type(data).__name__}, not an object"
+            )
+        return data
 
     def complete(self, request: Request) -> Completion:
         payload: dict = {
@@ -299,19 +338,26 @@ class OpenAICompatibleClient:
         started = time.monotonic()
         data = self._post(payload)
         latency = int((time.monotonic() - started) * 1000)
-        choices = data.get("choices") or []
-        if not choices:
-            raise ProviderError(
-                f"{self.base_url} answered without choices: {str(data)[:200]}",
-                retryable=False,
-                kind="bad_request",
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise _malformed(self.base_url, f"no choices: {redact(str(data)[:200])}")
+        first = choices[0]
+        if not isinstance(first, Mapping):
+            raise _malformed(
+                self.base_url, f"choice is {type(first).__name__}, not an object"
             )
-        message = choices[0].get("message") or {}
+        message = first.get("message")
+        if not isinstance(message, Mapping):
+            raise _malformed(self.base_url, "choice carries no message object")
         blocks = from_openai_message(message)
-        usage = data.get("usage") or {}
+        usage = data.get("usage")
+        if not isinstance(usage, Mapping):
+            usage = {}
         return Completion(
             blocks=blocks,
-            text="".join(b["text"] for b in blocks if b.get("type") == "text"),
+            text="".join(
+                str(b.get("text", "")) for b in blocks if b.get("type") == "text"
+            ),
             tokens_in=_int_or_none(usage.get("prompt_tokens")),
             tokens_out=_int_or_none(usage.get("completion_tokens")),
             latency_ms=latency,
@@ -366,17 +412,21 @@ class AnthropicClient:
                 final = stream.get_final_message()
         except sdk.RateLimitError as exc:
             raise ProviderError(
-                str(exc), retryable=True, status=429, kind="rate_limited"
+                redact(str(exc)), retryable=True, status=429, kind="rate_limited"
             ) from exc
         except sdk.APITimeoutError as exc:
-            raise ProviderError(str(exc), retryable=True, kind="timeout") from exc
+            raise ProviderError(
+                redact(str(exc)), retryable=True, kind="timeout"
+            ) from exc
         except sdk.APIConnectionError as exc:
-            raise ProviderError(str(exc), retryable=True, kind="transport") from exc
+            raise ProviderError(
+                redact(str(exc)), retryable=True, kind="transport"
+            ) from exc
         except sdk.APIStatusError as exc:
             status = getattr(exc, "status_code", None)
             retryable, kind = _classify_http(status or 0, str(exc))
             raise ProviderError(
-                str(exc), retryable=retryable, status=status, kind=kind
+                redact(str(exc)), retryable=retryable, status=status, kind=kind
             ) from exc
         latency = int((time.monotonic() - started) * 1000)
         blocks: list[dict] = []

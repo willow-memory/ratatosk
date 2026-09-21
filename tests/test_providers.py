@@ -182,10 +182,18 @@ def _raise_http(monkeypatch, code: int, body: str = ""):
     [
         (429, "", True, "rate_limited"),
         (402, "", True, "quota"),
-        (403, '{"error":"insufficient credits"}', True, "quota"),
+        (400, '{"error":{"code":"insufficient_quota"}}', True, "quota"),
+        (400, '{"error":"no credits left"}', True, "quota"),
         (503, "", True, "overloaded"),
+        (529, "", True, "overloaded"),
+        (408, "", True, "timeout"),
         (401, "", False, "auth"),
         (403, "forbidden", False, "auth"),
+        # Loki finding 4: Gemini's wording for a key restricted to the wrong
+        # API. The prose must not talk a 403 into a quota step.
+        (403, '{"error":"insufficient permissions for this API key"}', False, "auth"),
+        (403, '{"error":"rate limit exceeded for this key"}', False, "auth"),
+        (409, "", False, "bad_request"),
         (400, '{"error":"bad schema"}', False, "bad_request"),
         (404, "", False, "bad_request"),
     ],
@@ -237,3 +245,59 @@ def test_an_answer_without_choices_is_the_rungs_defect(monkeypatch):
             Request(model="m", system="", messages=[{"role": "user", "content": "hi"}])
         )
     assert info.value.retryable is False
+    assert info.value.kind == "malformed"
+
+
+def _serve_raw(monkeypatch, raw: bytes):
+    monkeypatch.setattr(
+        providers.urllib.request, "urlopen", lambda req, timeout=None: _Resp(raw)
+    )
+
+
+_REQ = Request(model="m", system="", messages=[{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.parametrize(
+    ("raw", "what"),
+    [
+        (b"<html><title>Cloudflare</title></html>", "non-JSON body"),
+        (b"", "non-JSON body"),
+        (b"[1, 2, 3]", "not an object"),
+        (b'{"choices": ["text"]}', "choice is str"),
+        (b'{"choices": [{"index": 0}]}', "no message object"),
+    ],
+)
+def test_a_200_out_of_shape_is_a_provider_error_not_a_crash(monkeypatch, raw, what):
+    """Loki finding 1: a proxy's HTML 200, an empty body, a non-dict choice —
+    each used to escape as JSONDecodeError/AttributeError with no receipt.
+    Now every one is the rung's own ProviderError, kind `malformed`."""
+    _serve_raw(monkeypatch, raw)
+    with pytest.raises(ProviderError) as info:
+        OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert info.value.kind == "malformed"
+    assert info.value.retryable is False
+    assert what in str(info.value)
+
+
+def test_a_text_block_without_text_does_not_crash(monkeypatch):
+    _serve(monkeypatch, {"choices": [{"message": {"content": [{"type": "text"}]}}]})
+    done = OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert done.text == ""
+
+
+def test_an_error_body_that_echoes_a_key_is_redacted(monkeypatch):
+    """Loki finding 5: the body reaches the receipt, the bus and stdout."""
+    leaked = "sk-" + "a" * 40
+    _raise_http(monkeypatch, 401, f'{{"error":"Incorrect API key provided: {leaked}"}}')
+    with pytest.raises(ProviderError) as info:
+        OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert leaked not in str(info.value)
+    assert "[REDACTED:provider_api_key]" in str(info.value)
+
+
+def test_a_malformed_200_that_echoes_a_key_is_redacted(monkeypatch):
+    leaked = "sk-" + "b" * 40
+    _serve_raw(monkeypatch, f"oops {leaked}".encode())
+    with pytest.raises(ProviderError) as info:
+        OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert leaked not in str(info.value)
