@@ -113,13 +113,17 @@ def make_mcp_sender(mcp_call, *, channel: str | None = None, app_id: str | None 
                 ok=False,
                 detail="grove channel unset — set RATATOSK_GROVE_CHANNEL or pass channel=",
             )
+        # Read at send time, like the channel: a seat named after import
+        # (`crown --app-id`) must post as itself, not as the import-time
+        # default. The same rule `channel_env` documents above.
+        sender = os.environ.get("WILLOW_AGENT_NAME", _SENDER)
         result = mcp_call(
             "grove_send_message",
             {
                 "app_id": app_id,
                 "channel_name": chan,
                 "content": content,
-                "sender": _SENDER,
+                "sender": sender,
             },
         )
         detail = _failure_detail(result)
@@ -203,5 +207,15 @@ def turn_receipt(line: str) -> GroveReceipt:
 
     The caller (``ratatosk.inference``) renders the line; this only posts it,
     so the same words land in the JSONL and on the channel.
+    """
+    return send(line)
+
+
+def seat_receipt(line: str) -> GroveReceipt:
+    """A seat lifecycle receipt — entered / closed — on the bus.
+
+    ``turn_receipt``'s sibling for ``ratatosk.seat``: the wake and the handoff
+    are the two receipts sealed decision 3613d55e names beside the per-call
+    ones. Rendered by the caller; only posted here.
     """
     return send(line)
