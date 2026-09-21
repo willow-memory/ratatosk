@@ -499,13 +499,13 @@ def _isolate(monkeypatch, tmp_path):
 
 
 def _done(**overrides) -> Completion:
-    kw = dict(
-        blocks=[{"type": "text", "text": "done"}],
-        text="done",
-        tokens_in=1,
-        tokens_out=1,
-        latency_ms=1,
-    )
+    kw = {
+        "blocks": [{"type": "text", "text": "done"}],
+        "text": "done",
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "latency_ms": 1,
+    }
     kw.update(overrides)
     return Completion(**kw)
 
@@ -695,8 +695,12 @@ def test_run_wake_reports_the_wall_clock_budget_even_when_one_call_overruns_it(
     )
 
     elapsed = time.monotonic() - started
-    assert len(calls) == 1, "one call still had to run to completion — it cannot be preempted"
-    assert elapsed >= 0.05 > 0.01
+    assert len(calls) == 1, (
+        "one call still had to run to completion — it cannot be preempted"
+    )
+    assert elapsed >= 0.05, (
+        "the call's own 0.05s sleep ran past the 0.01s wall-clock budget"
+    )
     assert "outcome=budget_seconds" in line, "the overrun is reported, not silently ok"
     assert "outcome=ok" not in line
 
@@ -733,7 +737,10 @@ def test_run_wake_fires_a_heartbeat_during_a_multi_turn_wake_not_only_after(
     monkeypatch.setattr(crown._tools, "dispatch", lambda *a, **k: "r")
     tool_use = {"id": "t1", "name": "Read", "input": {"file_path": "/x"}}
     calling = Completion(
-        blocks=[{"type": "tool_use", **tool_use}], text="", tokens_in=1, tokens_out=1,
+        blocks=[{"type": "tool_use", **tool_use}],
+        text="",
+        tokens_in=1,
+        tokens_out=1,
         latency_ms=1,
     )
 
@@ -786,7 +793,10 @@ def test_wake_tool_confirm_verdict_is_refused_not_prompted_on_stdin(
     monkeypatch.setattr(builtins, "input", fake_input)
     tool_use = {"id": "t1", "name": "Bash", "input": {"command": "true"}}
     calling = Completion(
-        blocks=[{"type": "tool_use", **tool_use}], text="", tokens_in=1, tokens_out=1,
+        blocks=[{"type": "tool_use", **tool_use}],
+        text="",
+        tokens_in=1,
+        tokens_out=1,
         latency_ms=1,
     )
     inference = _fake_inference(lambda *a, **k: (calling, _receipt_ok()))
@@ -821,7 +831,9 @@ def test_wake_tool_confirm_verdict_is_refused_not_prompted_on_stdin(
     }
 
 
-def test_wake_exception_after_entry_still_closes_and_never_raises(tmp_path, monkeypatch):
+def test_wake_exception_after_entry_still_closes_and_never_raises(
+    tmp_path, monkeypatch
+):
     """F3 (Loki 3564BE3C, folded from test_loki_probe_wake.py's
     test_probe_exception_after_enter_never_closes): a defect anywhere
     between seat.enter and the turn loop used to leave the packet `working`
@@ -865,7 +877,10 @@ def test_wake_envelope_app_id_never_overrides_the_daemons_own_seat(monkeypatch):
         crown, "run_wake", lambda mcp_call, **kw: captured.update(kw) or "line"
     )
     daemon = SeatDaemon(
-        node="ratatosk", channel="fleet", mcp_call=lambda n, i: {}, crown_app_id="hanuman"
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
     )
 
     from ratatosk.protocol.envelope import build_envelope

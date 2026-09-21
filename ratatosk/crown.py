@@ -931,7 +931,7 @@ def run_wake(
         outcome = f"refused: ladder unusable for class={task_class}: {exc}"
         with contextlib.suppress(Exception):
             writer.write_system(f"[wake] {outcome}")
-    except Exception as exc:  # a crashed setup/turn still closes and inks — never a dead wake
+    except Exception as exc:  # a crashed setup/turn still closes — never a dead wake
         outcome = "crashed"
         with contextlib.suppress(Exception):
             writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")

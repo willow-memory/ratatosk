@@ -488,7 +488,9 @@ def test_summarize_collects_system_notices_in_order(tmp_path, monkeypatch):
     ]
 
 
-def test_build_findings_surfaces_the_notices_as_their_own_finding(tmp_path, monkeypatch):
+def test_build_findings_surfaces_the_notices_as_their_own_finding(
+    tmp_path, monkeypatch
+):
     writer = _transcript(tmp_path, monkeypatch)
     writer.write_system("[budget] turn cap reached (2) — refusing, not stretching")
     entry = _seat.enter(
@@ -515,7 +517,9 @@ def test_narrative_names_the_last_notice_when_the_session_did_not_end_cleanly(
     assert "Ended: [budget] turn cap reached (2)" in text
 
 
-def test_narrative_omits_the_ended_clause_when_there_are_no_notices(tmp_path, monkeypatch):
+def test_narrative_omits_the_ended_clause_when_there_are_no_notices(
+    tmp_path, monkeypatch
+):
     writer = _transcript(tmp_path, monkeypatch)
     entry = _seat.enter(
         FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s-1"
