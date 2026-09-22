@@ -1074,6 +1074,73 @@ def test_run_wake_build_role_write_scope_rejects_dotdot_escape(tmp_path, monkeyp
     assert "outcome=budget_turns" in line
 
 
+# -- Windows-shaped assignments (Loki F57D5EC8) -----------------------------
+#
+# The extraction regex was POSIX-only (leading "/", "/worktrees/"); on a
+# real Windows CI runner the assignment names a drive-letter path
+# (C:\Users\runneradmin\...\worktrees\feat-x) and nothing matched, so the
+# scope check degraded to refuse-everything. These feed a Windows-shaped
+# string built with PureWindowsPath so the fix is exercised on this
+# (Linux) box, not only proven by trusting a Windows CI leg to go green.
+
+
+def test_worktree_from_assignment_extracts_a_windows_shaped_path():
+    from pathlib import PureWindowsPath
+
+    winpath = PureWindowsPath(r"C:\Users\runneradmin\work\ratatosk\worktrees\feat-x")
+    assignment = f"# Build\n\nSame worktree: `{winpath}`."
+    assert crown._worktree_from_assignment(assignment) == str(winpath)
+
+
+def test_worktree_from_assignment_rejects_dotdot_in_a_windows_shaped_path():
+    from pathlib import PureWindowsPath
+
+    winpath = PureWindowsPath(
+        r"C:\Users\runneradmin\work\ratatosk\worktrees\feat\..\..\..\.."
+    )
+    assignment = f"# Build\n\nSame worktree: `{winpath}`."
+    assert crown._worktree_from_assignment(assignment) is None
+
+
+def test_run_wake_build_role_write_inside_a_windows_shaped_worktree_is_named(
+    tmp_path, monkeypatch
+):
+    """The extraction/`..`-check fix on a Windows-shaped assignment, proven
+    end to end: the wake policy names the worktree (rather than degrading
+    to "no packet worktree could be named") even though this box's own
+    Path is POSIX. The actual Write still runs against this box's real
+    filesystem — target is a real tmp_path file — the assignment's naming
+    is what was broken, not the runtime scope comparison (which already
+    used this process's own, OS-correct Path)."""
+    _isolate(monkeypatch, tmp_path)
+    from pathlib import PureWindowsPath
+
+    worktree = tmp_path / "worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    target = worktree / "file.txt"
+    winpath = PureWindowsPath(r"C:\Users\runneradmin\work\ratatosk\worktrees\feat-x")
+    assignment = f"# Build\n\nSame worktree: `{winpath}`."
+
+    assert crown._worktree_from_assignment(assignment) == str(winpath)
+    # And the refusal reason a real Windows run would have hit before this
+    # fix ("no packet worktree could be named") is gone — the extraction
+    # itself is what is under test here, not this box's cross-drive
+    # containment math (which real CI's Windows legs already prove).
+    inference = _tool_use_inference("Write", {"file_path": str(target), "content": "y"})
+    mcp = _confirm_loop_mcp("build-work-order", assignment=assignment)
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+    (close,) = mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" not in _notice_text(close)
+    assert "outcome=budget_turns" in line
+
+
 def test_run_wake_gated_tool_ignores_a_loosened_interactive_policy(
     tmp_path, monkeypatch
 ):

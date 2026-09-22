@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ratatosk import grove as _grove
 from ratatosk import seat as _seat
@@ -860,10 +860,35 @@ def _wake_policy_verdict(
 #: A path this repo's own packets consistently name in their assignment
 #: text — "Same worktree: `/…/worktrees/<branch>`" (see 45707360, F959F793,
 #: this very packet). Best-effort only: it reads the FIRST absolute path
-#: containing "/worktrees/" out of the assignment prose, which is a
-#: convention this repo's dispatcher happens to follow, not a protocol
-#: field. No match means no scope — see _wake_policy_verdict's refusal.
-_WORKTREE_PATH_RE = re.compile(r"(/\S*?/worktrees/[^\s`\"')]+)")
+#: containing "/worktrees/" (POSIX) or "\worktrees\" (Windows — CI's
+#: test-windows legs run this code on a real Windows runner, where the
+#: assignment text names a drive-letter path like
+#: `C:\Users\runneradmin\...\worktrees\feat-x`; Loki F57D5EC8 caught the
+#: POSIX-only pattern never matching there, degrading every build-seat
+#: Write to "no packet worktree could be named") out of the assignment
+#: prose, which is a convention this repo's dispatcher happens to follow,
+#: not a protocol field. No match means no scope — see
+#: _wake_policy_verdict's refusal.
+_WORKTREE_PATH_RE = re.compile(
+    r"(/\S*?/worktrees/[^\s`\"')]+"
+    r"|[A-Za-z]:\\\S*?\\worktrees\\[^\s`\"')]+)"
+)
+
+
+def _worktree_path_parts(raw: str) -> tuple[str, ...]:
+    """``raw``'s path parts, read with the separator convention ITS OWN
+    text uses — a drive-letter or backslash-bearing path is read with
+    ``PureWindowsPath`` even when THIS process is running on POSIX (a
+    Windows-shaped assignment can be exercised in a Linux test this way,
+    and — the real case — a Linux-built packet's own text is never handed
+    to a Windows-running seat, so the string's own shape is always the
+    right signal); everything else with ``PurePosixPath``. Plain ``Path``
+    would silently misread a backslash-separated string as one literal
+    filename on a POSIX box, which is exactly how the ``..`` check below
+    used to pass a Windows path straight through unexamined."""
+    if re.match(r"^[A-Za-z]:\\", raw) or "\\" in raw:
+        return PureWindowsPath(raw).parts
+    return PurePosixPath(raw).parts
 
 
 def _worktree_from_assignment(assignment: str) -> str | None:
@@ -878,8 +903,10 @@ def _worktree_from_assignment(assignment: str) -> str | None:
     # sequence points at (as far up as filesystem root), and then any
     # target "under" that oversized scope was accepted. A ".." anywhere in
     # the named path is refused outright, before resolve() ever runs on
-    # it — never trusted to cancel itself out safely.
-    if ".." in Path(raw).parts:
+    # it — never trusted to cancel itself out safely. Checked with the
+    # path's OWN separator convention (see _worktree_path_parts) so a
+    # Windows-shaped ".." survives this check exactly as a POSIX one does.
+    if ".." in _worktree_path_parts(raw):
         return None
     return raw
 
