@@ -35,11 +35,25 @@ RECONNECT_COOLDOWN = 15.0
 
 
 def default_mcp_argv() -> list[str]:
+    """The command that spawns willow-mcp.
+
+    ``RATATOSK_MCP_COMMAND`` wins outright when set. Otherwise the
+    interpreter is ``WILLOW_MCP_PYTHON`` (the broker's own venv python,
+    resolved per-box) when set, falling back to ``sys.executable`` — THIS
+    process's own interpreter — only when it is not. That fallback used to
+    be the only answer: a woken seat's own venv (ratatosk's) has no
+    ``willow_mcp`` package installed, so ``sys.executable -m willow_mcp``
+    failed at import, the MCP init handshake timed out, and the daemon spun
+    in ``Restart=on-failure`` forever (Loki FC9EDFB8 finding 3) — the very
+    env-file key (``WILLOW_MCP_PYTHON``) the daemon's own unit template
+    already kept was simply never read.
+    """
     override = os.environ.get("RATATOSK_MCP_COMMAND", "").strip()
     if override:
         return shlex.split(override)
     module = os.environ.get("RATATOSK_MCP_MODULE", "willow_mcp")
-    return [sys.executable, "-m", module]
+    python = os.environ.get("WILLOW_MCP_PYTHON", "").strip() or sys.executable
+    return [python, "-m", module]
 
 
 #: Environment namespaces forwarded to the server we spawn. The MCP SDK does

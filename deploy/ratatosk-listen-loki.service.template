@@ -1,0 +1,152 @@
+# unit: ratatosk-listen-loki.service
+#
+# The ratatosk fleet activation daemon (Grove listener + heartbeat +
+# per-seat bounded crown wake, sealed 3613d55e / 3566adb5) for LOKI — the
+# first live seat to wake (sealed 3566adb5: "a second seat wakes only after
+# that receipt is read"). Installed and reinstalled through
+# unit_install_execute (verb 17, unit.install) — never typed by hand, same
+# discipline as nestor-ui.service.template and
+# willow-mcp-manifest-grant.service.template.
+#
+# VERDICT (Loki FC9EDFB8 finding 2 asked for one): a genuine systemd
+# instantiated template (`ratatosk-listen@.service`, started per seat as
+# `ratatosk-listen@loki.service` with `%i` expanded by systemd at
+# activation time) is NOT installable through unit_install_executor.py as
+# it stands, and this template does not attempt it. The executor's own
+# install path (unit_install_executor.py:601-606) requires
+# ``declared_unit_name(...) == unit`` — an EXACT string match between the
+# name this file's own ``# unit:`` line (or, failing that, its filename)
+# declares and the ``unit`` argument the caller passed to
+# ``unit_install_execute``. ``render_template`` never touches ``%i`` (it
+# only substitutes at-sign-wrapped ALL-CAPS placeholders), and the comment at
+# unit_install_executor.py:66-67 confirms the instance name IS what `unit`
+# names — so installing an actual instance (``ratatosk-listen@loki.service``)
+# would require this file to declare exactly that string, which a template
+# meant to serve every future seat cannot do from one static ``# unit:``
+# line. The only string this file COULD honestly declare and have installed
+# is the bare, uninstantiated form (``ratatosk-listen@.service``) — which
+# writes a valid template unit to disk, but `enable --now` against a bare
+# `@.service` with no instance is refused by systemd itself at the
+# activation step, not by this Python code, so "writes, enables and starts"
+# (this verb's own description) would fail on its own last step every time.
+# The honest shape, until unit_install_executor grows instance-name support
+# (an actual fix belongs there, not worked around here — no broker changes
+# in this packet): ONE CONCRETE unit per seat, named for that seat, each
+# declared in its own template file. This is Loki's. A second seat gets its
+# own sibling file (e.g. ``ratatosk-listen-ada.service.template``) when it
+# is onboarded, copying this one's shape with its own ``# unit:`` line,
+# Description, SyslogIdentifier, and ``--app-id``.
+#
+# render_values() (willow-mcp/src/willow_mcp/unit_install_executor.py) fills
+# placeholders only from the INSTALLING process's own resolved environment:
+# PYTHON, UNIT, WILLOW_HOME, WILLOW_STORE_ROOT, PG_DB, USER, HOME,
+# XDG_CONFIG_HOME, and (when set) WILLOW_KEYRING / WILLOW_PGP_FINGERPRINT /
+# NESTOR_DB. Nothing below names a placeholder outside that set — including
+# in comments: render_template's placeholder scan runs over the WHOLE
+# rendered text, comments included, so a stray, all-caps "at-sign-word-at-sign"
+# token in a comment ETEMPLATEs an install exactly like one in [Service]
+# would (the previous cut of this file did this by accident, quoting the
+# at-sign-KEY-at-sign placeholder syntax literally in prose — Loki
+# FC9EDFB8 finding 1).
+#
+# ExecStart/WorkingDirectory are a documented absolute path built from
+# @HOME@ (the same shape nestor-ui.service.template uses for the same
+# reason: none of render_values()'s fillable keys name a SIBLING repo's
+# checkout or its virtualenv beyond HOME itself, so anything more specific
+# than @HOME@/... here would be unfillable and every install would refuse
+# ETEMPLATE). Ratatosk's own .venv (built by its own CI/CONTRIBUTING flow)
+# provides the `ratatosk-listen` console script. That venv does NOT contain
+# willow_mcp, though — a separate package in a sibling repo's own venv — so
+# `ratatosk.mcp_client.default_mcp_argv()` (fixed this rework: Loki
+# FC9EDFB8 finding 3) reads WILLOW_MCP_PYTHON (kept below) and spawns the
+# broker with THAT interpreter, never ratatosk's own `sys.executable`. Before
+# this fix every wake attempt imported `willow_mcp` under a venv that does
+# not have it, the MCP init handshake timed out, and Restart=on-failure spun
+# the unit forever.
+#
+# EnvironmentFile=@WILLOW_HOME@/env, THEN UnsetEnvironment= strips
+# everything a woken seat has no business holding — the same shape
+# nestor-ui.service.template and willow-mcp-manifest-grant.service.template
+# use, and the same reasoning: an unauthenticated background wake reads a
+# narrower slice of the operator's env than the desk does, not the whole
+# file, and "wholesale" (EnvironmentFile with no UnsetEnvironment= at all)
+# is exactly the shape this rule exists to refuse. A woken seat KEEPS only:
+#   RATATOSK_GROVE_CHANNEL  — which Grove channel BusListener answers on
+#   WILLOW_HOME             — ratatosk's own data root (paths.py) and the
+#                              willow-mcp child's WILLOW_HOME (mcp_client.py
+#                              forwards every WILLOW_*/RATATOSK_*/PG* var it
+#                              sees in ITS OWN env to the spawned child)
+#   WILLOW_MCP_APPS_ROOT, WILLOW_MCP_PYTHON — willow-mcp's own MCP
+#                              coordinates; WILLOW_MCP_PYTHON is read
+#                              directly by default_mcp_argv() (see above),
+#                              WILLOW_MCP_APPS_ROOT is forwarded to the
+#                              spawned child so it resolves this seat's own
+#                              manifest and app tree
+#   ANTHROPIC_API_KEY, GEMINI_API_KEY — Loki is an auditor (audit-class
+#                              ladder rungs); provider_ladder.json's audit
+#                              class names anthropic and gemini rungs, so
+#                              those are the two keys THIS seat's own class
+#                              can ever reach. The other four provider keys
+#                              (GROQ/CEREBRAS/OPENROUTER/HF) are named in
+#                              UnsetEnvironment= below, not kept — a
+#                              read-only audit wake has no use for build's
+#                              or research's rungs, and a narrower kept set
+#                              is the same reasoning the rest of this list
+#                              already follows. A future BUILD seat's own
+#                              unit file keeps the wider set its class uses.
+# Two keys a plain "keep everything WILLOW_/RATATOSK_/PG named" pass would
+# have kept, deliberately NOT kept (Loki FC9EDFB8 LOW — enumerated, not just
+# unset): WILLOW_PG_USER (ratatosk never opens a Postgres connection of its
+# own — grove.py, the ladder and the seat module all speak to state only
+# through willow-mcp's own MCP calls) and WILLOW_KEYRING (ratatosk performs
+# no PGP signing operation on any path a wake exercises; signing is
+# willow-mcp's own concern, already covered by ITS unit's env, not this
+# one's).
+# Everything else UnsetEnvironment= names below is the rest of the
+# documented $WILLOW_HOME/env vocabulary (nestor-ui.service.template +
+# willow-mcp-manifest-grant.service.template's own comments) that this
+# daemon never reads — Nestor's seal-surface keys, the desk's Postgres/
+# store/vault coordinates, WILLOW_APP_ID (the CLI flag below sets it in the
+# process's own environment; a stale env-file copy must not race it), and
+# WILLOW_IN_KART (this is a systemd unit, never a Kart sandbox). This list
+# is a snapshot of key NAMES, not values, and must be re-checked by hand
+# against $WILLOW_HOME/env whenever a new key is added there — same caveat
+# nestor-ui.service.template's own comment states.
+#
+# --wake-turns/--wake-seconds are the defaults crown.DEFAULT_WAKE_TURNS/
+# DEFAULT_WAKE_SECONDS already justify (8 turns / 600s) — named explicitly
+# on the command line so a reader of this unit does not have to go find the
+# Python default to know the bound a woken seat here actually runs under.
+#
+# Long-running, not a oneshot .timer: BusListener's own poll loop already
+# IS the scheduling (poll_interval, default 2s) and the heartbeat is what
+# proves liveness between wakes on grove_fleet_status — a timer-triggered
+# oneshot process would have no heartbeat between runs and would either
+# reconnect the MCP stdio transport every tick (expensive, and racy against
+# a wake still in flight) or need its own separate liveness story. No
+# .timer sibling ships with this template.
+[Unit]
+Description=Ratatosk fleet activation daemon (Grove listener + heartbeat + wake policy) — loki
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@HOME@/github/willow-memory/ratatosk
+EnvironmentFile=@WILLOW_HOME@/env
+UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY OPENROUTER_API_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_STORE_ROOT WILLOW_VAULT_BOX
+ExecStart=@HOME@/github/willow-memory/ratatosk/.venv/bin/ratatosk-listen --app-id loki --wake-turns 8 --wake-seconds 600
+# SIGTERM reaches SeatDaemon.request_stop via the signal handler installed in
+# ratatosk.daemon.main; the loop exits at the next poll boundary and tears
+# down the MCP stdio server in its finally — no SIGKILL escalation needed for
+# an ordinary stop/restart.
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ratatosk-listen-loki
+
+[Install]
+WantedBy=default.target

@@ -44,6 +44,18 @@ _VALID_WRITE_SCOPES = frozenset({WRITE_SCOPE_WORKTREE, None})
 #: allow-membership is the whole answer — no path scoping applies to it.
 SCOPED_TOOLS = frozenset({"Write", "Edit"})
 
+#: Tool names a wake ALWAYS judges against this policy, regardless of what
+#: the shared, mutable $WILLOW_HOME/ratatosk/policy.json currently says
+#: (Loki FC9EDFB8 finding 5): the interactive PolicyStore's default CONFIRM
+#: rules cover exactly this set, and an operator loosening it in any REPL
+#: (`/permissions set Write allow`) would otherwise let a woken seat skip
+#: the wake policy entirely — the tool would resolve straight to ALLOW and
+#: never raise NeedsConfirmation, so the wake-policy check (which only used
+#: to run from inside that exception handler) never ran at all. crown.py's
+#: non-interactive dispatch checks membership here FIRST, before asking
+#: PolicyStore anything, for exactly these names.
+GATED_TOOLS = FORBIDDEN_TOOLS | SCOPED_TOOLS
+
 
 class WakePolicyError(ValueError):
     """The wake policy table, or one role's entry in it, is not usable."""

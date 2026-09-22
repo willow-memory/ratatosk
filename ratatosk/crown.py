@@ -709,7 +709,45 @@ def _run_turn_bounded(
 
         tool_results = []
         for tu in tool_uses:
-            if non_interactive:
+            if non_interactive and tu["name"] in _wake_policy.GATED_TOOLS:
+                # Loki FC9EDFB8 finding 5: checked BEFORE ``_tools.dispatch``
+                # is ever called, unconditionally — not from inside a
+                # NeedsConfirmation handler. The old shape only consulted
+                # the wake policy when the (shared, mutable)
+                # $WILLOW_HOME/ratatosk/policy.json still said CONFIRM for
+                # this tool; an operator loosening it in any REPL
+                # (`/permissions set Write allow`) made the tool resolve
+                # straight to ALLOW, so the exception never raised and the
+                # wake policy never ran at all. Bash/Write/Edit are now the
+                # wake policy's business regardless of what that file says.
+                allowed, why = _wake_policy_verdict(
+                    wake_policy, tu["name"], tu["input"], worktree_root
+                )
+                if allowed:
+                    # hook_runtime=None: a PreTool hook can rewrite
+                    # tool_input (merged_input) AFTER this scope check ran
+                    # (Loki FC9EDFB8 LOW) — hooks are an interactive-REPL
+                    # feature a wake does not need, so they are skipped
+                    # entirely for a gated tool rather than trusted not to
+                    # move the target out from under the check.
+                    try:
+                        result = _tools.dispatch(
+                            tu["name"],
+                            tu["input"],
+                            state.mcp_names,
+                            state.mcp_call,
+                            trusted=True,
+                            policy_store=None,
+                            hook_runtime=None,
+                        )
+                    except Exception as exc:
+                        result = f"{tu['name']} failed: {exc}."
+                else:
+                    note = f"[confirm refused] {tu['name']}: {why}"
+                    print(f"  {note}", flush=True)
+                    state.writer.write_system(note)
+                    result = f"{tu['name']} was refused by the wake policy: {why}"
+            elif non_interactive:
                 try:
                     result = _tools.dispatch(
                         tu["name"],
@@ -721,14 +759,15 @@ def _run_turn_bounded(
                         hook_runtime=state.hooks,
                     )
                 except NeedsConfirmation as needs:
+                    # Any OTHER tool a (future, custom) PolicyStore rule
+                    # marks CONFIRM — the gated set above covers today's
+                    # defaults (Bash/Write/Edit); this still judges anything
+                    # else against the same wake policy rather than ever
+                    # prompting.
                     allowed, why = _wake_policy_verdict(
                         wake_policy, tu["name"], tu["input"], worktree_root
                     )
                     if allowed:
-                        # One-shot approval, the same shape prompt_and_dispatch
-                        # uses for a human's "y": re-enter with the verdict
-                        # already resolved by the wake policy, never by
-                        # widening the policy itself.
                         try:
                             result = _tools.dispatch(
                                 tu["name"],
@@ -829,7 +868,20 @@ _WORKTREE_PATH_RE = re.compile(r"(/\S*?/worktrees/[^\s`\"')]+)")
 
 def _worktree_from_assignment(assignment: str) -> str | None:
     match = _WORKTREE_PATH_RE.search(assignment or "")
-    return match.group(1).rstrip(".,;:") if match else None
+    if not match:
+        return None
+    raw = match.group(1).rstrip(".,;:")
+    # Loki FC9EDFB8 finding 4: a crafted assignment naming
+    # ".../worktrees/feat/../../../.." passed the old scope check, because
+    # .resolve() on THIS string collapses the ".." itself — silently
+    # widening "the worktree" to whatever ancestor directory the ".."
+    # sequence points at (as far up as filesystem root), and then any
+    # target "under" that oversized scope was accepted. A ".." anywhere in
+    # the named path is refused outright, before resolve() ever runs on
+    # it — never trusted to cancel itself out safely.
+    if ".." in Path(raw).parts:
+        return None
+    return raw
 
 
 #: The packet's ``role`` (dispatch meta, e.g. ``dispatch_read``'s

@@ -443,6 +443,9 @@ def _entered(**overrides) -> dict:
         # existing tests that do not care about the wake policy still get
         # one that resolves (Write/Edit allowed, scoped to the worktree).
         "role": "build-work-order",
+        # sealed 3566adb5 F6: the registry-backing proxy (seat.py) — a
+        # non-empty persona_file. See test_run_wake_refuses_an_unregistered_seat.
+        "persona_file": "/fleet/personas/hanuman.md",
     }
     result.update(overrides)
     return result
@@ -1038,6 +1041,102 @@ def test_run_wake_build_role_write_with_no_worktree_named_is_refused(
     (close,) = mcp.named("handoff_write_v4")
     assert "no packet worktree could be named" in _notice_text(close)
     assert "outcome=budget_turns" in line
+
+
+def test_run_wake_build_role_write_scope_rejects_dotdot_escape(tmp_path, monkeypatch):
+    """Loki FC9EDFB8 finding 4: a crafted assignment naming
+    '.../worktrees/feat/../../../..' used to pass, because .resolve() on
+    the worktree_root string itself collapsed the '..' to some ancestor
+    directory (as far up as filesystem root) and the target then read as
+    'under' that oversized scope. A '..' anywhere in the extracted worktree
+    path is refused outright now, before resolve() ever sees it."""
+    _isolate(monkeypatch, tmp_path)
+    target = tmp_path / "somewhere-unrelated" / "file.txt"
+    (tmp_path / "somewhere-unrelated").mkdir(parents=True)
+    assignment = f"# Build\n\nSame worktree: `{tmp_path}/worktrees/feat/../../../..`."
+    inference = _tool_use_inference("Write", {"file_path": str(target), "content": "y"})
+    mcp = _confirm_loop_mcp("build-work-order", assignment=assignment)
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert not target.exists(), (
+        "the dotdot-widened scope must not have admitted this write"
+    )
+    (close,) = mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" in _notice_text(close)
+    assert "outcome=budget_turns" in line
+
+
+def test_run_wake_gated_tool_ignores_a_loosened_interactive_policy(
+    tmp_path, monkeypatch
+):
+    """Loki FC9EDFB8 finding 5: the wake policy used to only be consulted
+    from inside NeedsConfirmation's except-handler, so an operator loosened
+    REPL rule (shared $WILLOW_HOME/ratatosk/policy.json: `Write -> allow`)
+    made Write resolve straight to ALLOW and skip the wake policy check
+    entirely. Bash/Write/Edit are now checked against the wake policy FIRST,
+    unconditionally, regardless of what PolicyStore says."""
+    _isolate(monkeypatch, tmp_path)
+    # Write the shared policy.json the way /permissions set would.
+    policy_dir = tmp_path / "ratatosk"
+    policy_dir.mkdir(parents=True)
+    (policy_dir / "policy.json").write_text(
+        json.dumps({"rules": [{"pattern": "Write", "action": "allow"}]})
+    )
+    target = tmp_path / "x.txt"
+    inference = _tool_use_inference("Write", {"file_path": str(target), "content": "y"})
+    # auditor: Write is not in its allow set at all.
+    mcp = _confirm_loop_mcp("auditor")
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert not target.exists(), "the wake policy must still refuse Write for auditor"
+    (close,) = mcp.named("handoff_write_v4")
+    assert "not in this seat's wake-policy allow set" in _notice_text(close)
+    assert "outcome=budget_turns" in line
+
+
+def test_run_wake_refuses_an_unregistered_seat_even_with_a_matching_role(
+    tmp_path, monkeypatch
+):
+    """Loki FC9EDFB8 finding 6: role alone is not enough — persona_file
+    (this seat's registry-backing proxy) must also be present, or the wake
+    refuses to start even though "auditor" is a real table role."""
+    _isolate(monkeypatch, tmp_path)
+
+    def _never_called(*_a, **_kw):
+        raise AssertionError("no turn should run for an unregistered seat")
+
+    inference = _fake_inference(_never_called)
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(role="auditor", persona_file=""),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+
+    line = crown.run_wake(
+        mcp, app_id="hanuman", dispatch_id="PKT00001", trace_id="t", inference=inference
+    )
+
+    assert "outcome=refused:" in line
+    assert "not registry-backed" in line
+    assert mcp.named("handoff_write_v4"), "still closes despite refusing to start"
 
 
 def test_run_wake_refuses_to_start_for_an_unknown_role(tmp_path, monkeypatch):

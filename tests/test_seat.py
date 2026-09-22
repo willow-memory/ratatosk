@@ -37,6 +37,13 @@ def _entered(**overrides) -> dict:
         "assignment": "# Build the thing\n\nOne bite.",
         "closeout_tools": ["handoff_write_v4"],
         "blockers": {"count": 0, "items": []},
+        # sealed 3566adb5 F6 (Loki FC9EDFB8): a non-empty persona_file is
+        # this module's proxy for "this app_id resolved to a real fleet
+        # persona registry entry" — required before a wake policy is
+        # trusted for the role. Default present so existing tests that do
+        # not care about registration keep resolving; the unregistered-seat
+        # tests below override it to "".
+        "persona_file": "/fleet/personas/hanuman.md",
     }
     result.update(overrides)
     return result
@@ -224,6 +231,46 @@ def test_receipt_carries_the_wake_policy_error_when_resolution_failed():
     receipt = entry.receipt()
     assert "nonexistent-role" in receipt["wake_policy_error"]
     assert "wake_policy" not in receipt
+
+
+def test_enter_refuses_a_wake_policy_with_no_registry_persona_file(
+    tmp_path, monkeypatch
+):
+    """Loki FC9EDFB8 finding 6: an unregistered app_id can have `role` be
+    whatever the dispatching packet's own meta.role said — bus-authored,
+    not registry-authored. Even a role string that matches a real table
+    entry (here "auditor", which WOULD grant Write=no/Read=yes if trusted)
+    must not resolve without persona_file naming a real registry entry."""
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor", persona_file="")}),
+        app_id="nobody-registered",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "not registry-backed" in entry.wake_policy_error
+    assert "persona_file" in entry.wake_policy_error
+
+
+def test_enter_refuses_even_a_manifest_carried_policy_with_no_persona_file():
+    """The persona_file check runs before either source (table or
+    manifest-carried) is consulted — an unregistered seat gets neither."""
+    entry = _seat.enter(
+        FakeMCP(
+            {
+                "session_enter": _entered(
+                    role="auditor",
+                    persona_file="",
+                    wake_policy={"allow": ["Read", "Write"], "write_scope": None},
+                )
+            }
+        ),
+        app_id="nobody-registered",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "not registry-backed" in entry.wake_policy_error
 
 
 def test_an_error_result_refuses_the_seat():

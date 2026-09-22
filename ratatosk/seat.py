@@ -243,8 +243,30 @@ def _resolve_wake_policy(
     the entry as an error string, and it is each WAKE CALLER's job (not
     enter()'s) to decide whether that refuses the wake; enter()'s own
     refusal semantics (SeatRefused on a broker error or blockers) are
-    unchanged by this."""
+    unchanged by this.
+
+    Loki FC9EDFB8 finding 6: `role` on an UNREGISTERED app_id can be
+    whatever the dispatching packet's own meta.role said — the packet is
+    authored by the orchestrator, not by this seat, but it is still bus
+    content, and the seal says the policy is never picked from the bus or
+    the envelope; "no registry role, no wake." This module cannot read the
+    fleet persona registry (governance/fleet_personas.json — a willow-mcp
+    concern, no broker changes in this packet), so it uses the one signal
+    session_enter's own response already carries for "this app_id resolved
+    to a real registry entry": a non-empty `persona_file` (the path
+    session_enter resolves from the registry for an app_id that has an
+    actual persona — see e.g. hanuman's own entry, which always carries
+    one). No `persona_file` -> the role is not trusted for a wake policy,
+    whatever string it names, even if that string happens to match a real
+    table role. This is a proxy, not a registry read; if it proves
+    insufficient the honest fix is a broker-surfaced `registered: bool` (or
+    equivalent) on session_enter's response — named here as a follow-on."""
     manifest_raw = result.get("wake_policy")
+    if not str(result.get("persona_file") or "").strip():
+        return None, (
+            f"no registry persona_file for this seat — role {role!r} is not "
+            "registry-backed and cannot be trusted for a wake policy"
+        )
     try:
         if isinstance(manifest_raw, dict):
             return _wake_policy.from_manifest(manifest_raw, role=role), ""
