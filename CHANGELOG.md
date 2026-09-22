@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.11.0](https://github.com/willow-memory/ratatosk/compare/v1.10.0...v1.11.0) (2026-09-22)
+
+
+### Added
+
+* **daemon:** per-seat wake policy — a woken crown runs what its role allows, refuses and inks the rest ([#54](https://github.com/willow-memory/ratatosk/issues/54)) ([06f24b5](https://github.com/willow-memory/ratatosk/commit/06f24b5d1c164c386032b387c9dabf06a537a302))
+* **daemon:** per-seat wake policy — what a woken crown may run unconfirmed ([6597469](https://github.com/willow-memory/ratatosk/commit/6597469f32a768c6014ad1d91a0a8fc4e6b1ed44))
+
+
+### Fixed
+
+* **daemon:** rework wake policy + unit per Loki's findings (FC9EDFB8) ([8d623e0](https://github.com/willow-memory/ratatosk/commit/8d623e04baacfda03d94481c8916e7b3c55520f5))
+* **daemon:** write-scope worktree extraction handles both path separators (F305956F) ([3e57558](https://github.com/willow-memory/ratatosk/commit/3e575587726698d064e5aa8ccbe7610163a3a73c))
+* **deploy:** set WILLOW_MCP_PYTHON explicitly in ratatosk-listen-loki unit (0FBF0BA4) ([abe392a](https://github.com/willow-memory/ratatosk/commit/abe392a8601bbaab6ca163dcd521cc3fe8909726))
+
 ## [1.10.0](https://github.com/willow-memory/ratatosk/compare/v1.9.0...v1.10.0) (2026-09-22)
 
 
