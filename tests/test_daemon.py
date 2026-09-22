@@ -438,6 +438,11 @@ def _entered(**overrides) -> dict:
         "assignment": "# Build the thing\n\nOne bite.",
         "closeout_tools": ["handoff_write_v4"],
         "blockers": {"count": 0, "items": []},
+        # sealed 3566adb5: session_enter's own role, resolved into a wake
+        # policy at entry. "build-work-order" matches hanuman's own seat —
+        # existing tests that do not care about the wake policy still get
+        # one that resolves (Write/Edit allowed, scoped to the worktree).
+        "role": "build-work-order",
     }
     result.update(overrides)
     return result
@@ -863,6 +868,276 @@ def test_wake_exception_after_entry_still_closes_and_never_raises(
     assert mcp.named("session_enter"), "entered"
     assert mcp.named("handoff_write_v4"), "closed despite the mid-setup crash"
     assert "outcome=crashed" in line
+
+
+# -- wake policy enforcement (sealed 3566adb5) ------------------------------
+
+
+def _confirm_loop_mcp(
+    role: str, assignment: str = "# Build the thing\n\nOne bite."
+) -> _FakeMCP:
+    return _FakeMCP(
+        {
+            "session_enter": _entered(role=role, assignment=assignment),
+            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+
+
+def _tool_use_inference(name: str, tool_input: dict):
+    tool_use = {"id": "t1", "name": name, "input": tool_input}
+    calling = Completion(
+        blocks=[{"type": "tool_use", **tool_use}],
+        text="",
+        tokens_in=1,
+        tokens_out=1,
+        latency_ms=1,
+    )
+    return _fake_inference(lambda *a, **k: (calling, _receipt_ok()))
+
+
+def _notice_text(close: dict) -> str:
+    """Every notice the closeout carries, joined — narrative only ever
+    shows the LAST one (seat.narrative), but build_findings' "how the
+    session ended" finding carries all of them; tests that may run past
+    the refusal they are checking (a budget note written afterward) read
+    this instead of narrative alone."""
+    findings = close.get("findings") or []
+    ended = [f for f in findings if f.get("title") == "how the session ended"]
+    return " | ".join(e for f in ended for e in f.get("evidence", []))
+
+
+def test_run_wake_bash_is_refused_for_every_role(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
+    for role in (
+        "auditor",
+        "build-work-order",
+        "architect",
+        "librarian",
+        "operator",
+        "witness",
+    ):
+        inference = _tool_use_inference("Bash", {"command": "true"})
+        mcp = _confirm_loop_mcp(role)
+        line = crown.run_wake(
+            mcp,
+            app_id="hanuman",
+            dispatch_id="PKT00001",
+            trace_id="t",
+            inference=inference,
+            max_turns=1,
+        )
+        assert "outcome=budget_turns" in line, role
+        (close,) = mcp.named("handoff_write_v4")
+        assert "not in this seat's wake-policy allow set" in _notice_text(close), role
+
+
+def test_run_wake_auditor_role_write_is_refused_by_policy(tmp_path, monkeypatch):
+    _isolate(monkeypatch, tmp_path)
+    inference = _tool_use_inference("Write", {"file_path": "/tmp/x", "content": "y"})
+    mcp = _confirm_loop_mcp("auditor")
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert "outcome=budget_turns" in line
+    (close,) = mcp.named("handoff_write_v4")
+    assert "not in this seat's wake-policy allow set (role='auditor')" in _notice_text(
+        close
+    )
+
+
+def test_run_wake_build_role_write_inside_the_worktree_runs(tmp_path, monkeypatch):
+    """No mock of _tools.dispatch here: the point is that the REAL
+    permission check raises NeedsConfirmation for Write (default policy),
+    the wake policy approves it (build-work-order, in scope), and the
+    approved one-shot re-dispatch actually performs the write — proven by
+    the file landing on disk, not by a mocked call log (a prior version of
+    this test mocked crown._tools.dispatch globally, which also replaced
+    the FIRST, confirm-raising call and silently never exercised the wake
+    policy check at all)."""
+    _isolate(monkeypatch, tmp_path)
+    worktree = tmp_path / "worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    target = worktree / "file.txt"
+    assignment = f"# Build\n\nSame worktree: `{worktree}`."
+    inference = _tool_use_inference(
+        "Write", {"file_path": str(target), "content": "hello"}
+    )
+    mcp = _confirm_loop_mcp("build-work-order", assignment=assignment)
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert target.read_text(encoding="utf-8") == "hello"
+    assert (
+        "outcome=budget_turns" in line
+    )  # the fake inference never stops calling tools
+
+
+def test_run_wake_build_role_write_outside_the_worktree_is_refused(
+    tmp_path, monkeypatch
+):
+    _isolate(monkeypatch, tmp_path)
+    worktree = tmp_path / "worktrees" / "feat-x"
+    worktree.mkdir(parents=True)
+    outside = tmp_path / "elsewhere" / "file.txt"
+    assignment = f"# Build\n\nSame worktree: `{worktree}`."
+    inference = _tool_use_inference(
+        "Write", {"file_path": str(outside), "content": "y"}
+    )
+    mcp = _confirm_loop_mcp("build-work-order", assignment=assignment)
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert not outside.exists(), "never actually written — refused before dispatch"
+    (close,) = mcp.named("handoff_write_v4")
+    assert "is outside the packet worktree" in _notice_text(close)
+    assert "outcome=budget_turns" in line
+
+
+def test_run_wake_build_role_write_with_no_worktree_named_is_refused(
+    tmp_path, monkeypatch
+):
+    _isolate(monkeypatch, tmp_path)
+    target = tmp_path / "x.txt"
+    inference = _tool_use_inference("Write", {"file_path": str(target), "content": "y"})
+    # default _entered() assignment names no worktree path
+    mcp = _confirm_loop_mcp("build-work-order")
+
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        max_turns=1,
+    )
+
+    assert not target.exists()
+    (close,) = mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" in _notice_text(close)
+    assert "outcome=budget_turns" in line
+
+
+def test_run_wake_refuses_to_start_for_an_unknown_role(tmp_path, monkeypatch):
+    """Sealed 3566adb5: 'a role missing from the table means the wake
+    refuses to start.' No turn is spent, but the seat still closes (F3
+    symmetry: enter and close stay paired)."""
+    _isolate(monkeypatch, tmp_path)
+
+    def _never_called(*_a, **_kw):
+        raise AssertionError("no turn should run when the wake policy can't resolve")
+
+    inference = _fake_inference(_never_called)
+    mcp = _confirm_loop_mcp("nonexistent-role")
+
+    line = crown.run_wake(
+        mcp, app_id="hanuman", dispatch_id="PKT00001", trace_id="t", inference=inference
+    )
+
+    assert "outcome=refused:" in line
+    assert "no wake policy for role" in line
+    (enter,) = mcp.named("session_enter")
+    assert enter["dispatch_id"] == "PKT00001"
+    assert mcp.named("handoff_write_v4"), "still closes despite refusing to start"
+
+
+def test_run_wake_ignores_an_envelope_carried_wake_policy_and_notes_it(
+    tmp_path, monkeypatch
+):
+    """Sealed 3566adb5, requirement 4: a WAKE envelope carrying
+    policy-shaped fields is ignored, never consulted — the daemon detects
+    this (SeatDaemon._crown_activate) and tells run_wake to note it."""
+    _isolate(monkeypatch, tmp_path)
+    inference = _fake_inference(lambda *a, **k: (_done(), _receipt_ok()))
+    mcp = _confirm_loop_mcp("auditor")
+
+    crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        envelope_wake_policy_ignored=True,
+    )
+
+    (close,) = mcp.named("handoff_write_v4")
+    assert (
+        "envelope carried wake-policy-shaped field(s) — ignored" in close["narrative"]
+    )
+
+
+def test_crown_activate_flags_an_envelope_carried_wake_policy_for_run_wake(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        crown, "run_wake", lambda mcp_call, **kw: captured.update(kw) or "line"
+    )
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
+    )
+
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(
+        to="ratatosk",
+        prompt="p",
+        intent="wake",
+        capabilities=[],
+        extra={"dispatch_id": "PKT1", "wake_policy": {"allow": ["Write"]}},
+    )
+    daemon._crown_activate(env)
+
+    assert captured["envelope_wake_policy_ignored"] is True
+
+
+def test_crown_activate_does_not_flag_an_ordinary_wake(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        crown, "run_wake", lambda mcp_call, **kw: captured.update(kw) or "line"
+    )
+    daemon = SeatDaemon(
+        node="ratatosk",
+        channel="fleet",
+        mcp_call=lambda n, i: {},
+        crown_app_id="hanuman",
+    )
+
+    from ratatosk.protocol.envelope import build_envelope
+
+    env = build_envelope(
+        to="ratatosk",
+        prompt="p",
+        intent="wake",
+        capabilities=[],
+        extra={"dispatch_id": "PKT1"},
+    )
+    daemon._crown_activate(env)
+
+    assert captured["envelope_wake_policy_ignored"] is False
 
 
 def test_wake_envelope_app_id_never_overrides_the_daemons_own_seat(monkeypatch):

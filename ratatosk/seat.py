@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ratatosk import grove as _grove
+from ratatosk import wake_policy as _wake_policy
 from ratatosk.mcp_client import MCP_ERROR_PREFIX, decode_payloads
 
 ORCHESTRATOR_APP_ID = "willow"
@@ -64,6 +65,19 @@ class SeatEntry:
     closeout_tool: str
     blockers: list[dict] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    #: The registry role session_enter's response named (e.g. "auditor",
+    #: "builder"/"build-work-order") — the seat's own answer, read once at
+    #: entry, never re-derived from a WAKE envelope or the bus (sealed
+    #: 3566adb5). Empty when the broker's response carried none.
+    role: str = ""
+    #: Resolved at entry from `role` (ratatosk.wake_policy), or from an
+    #: explicit `wake_policy` key in session_enter's own response when the
+    #: broker starts surfacing the manifest's policy that way (not built
+    #: here — see wake_policy.py's module docstring). None means resolution
+    #: failed; `wake_policy_error` names why, and a wake using this entry
+    #: must refuse to start rather than run unrestricted.
+    wake_policy: _wake_policy.WakePolicy | None = None
+    wake_policy_error: str = ""
 
     @property
     def persona_sha256(self) -> str:
@@ -82,7 +96,7 @@ class SeatEntry:
         return "\n\n".join(parts)
 
     def receipt(self) -> dict:
-        return {
+        receipt = {
             "event": "seat_entered",
             "app_id": self.app_id,
             "session_id": self.session_id,
@@ -91,6 +105,13 @@ class SeatEntry:
             "persona_sha256": self.persona_sha256,
             "closeout_tool": self.closeout_tool,
         }
+        # Which source decided the wake policy (or that resolution failed) —
+        # inked here so a reader never has to guess (sealed 3566adb5).
+        if self.wake_policy is not None:
+            receipt["wake_policy"] = self.wake_policy.as_dict()
+        elif self.wake_policy_error:
+            receipt["wake_policy_error"] = self.wake_policy_error
+        return receipt
 
 
 def decode_result(result: Any) -> dict:
@@ -193,6 +214,8 @@ def enter(
     persona = str(result.get("persona") or "")
     if pending_offered:
         result = {**result, "pending_offered": pending_offered}
+    role = str(result.get("role") or "")
+    wake_policy, wake_policy_error = _resolve_wake_policy(result, role)
     return SeatEntry(
         app_id=app_id,
         session_id=session_id,
@@ -205,7 +228,30 @@ def enter(
         closeout_tool=closeout,
         blockers=blockers,
         raw=result,
+        role=role,
+        wake_policy=wake_policy,
+        wake_policy_error=wake_policy_error,
     )
+
+
+def _resolve_wake_policy(
+    result: dict, role: str
+) -> tuple[_wake_policy.WakePolicy | None, str]:
+    """Sealed 3566adb5: an explicit `wake_policy` object in session_enter's
+    own response (the manifest, surfaced by the broker) wins; otherwise the
+    role-default table. Never raises — a resolution failure is carried on
+    the entry as an error string, and it is each WAKE CALLER's job (not
+    enter()'s) to decide whether that refuses the wake; enter()'s own
+    refusal semantics (SeatRefused on a broker error or blockers) are
+    unchanged by this."""
+    manifest_raw = result.get("wake_policy")
+    try:
+        if isinstance(manifest_raw, dict):
+            return _wake_policy.from_manifest(manifest_raw, role=role), ""
+        table = _wake_policy.load()
+        return _wake_policy.resolve_for_role(table, role), ""
+    except _wake_policy.WakePolicyError as exc:
+        return None, str(exc)
 
 
 def _is_human_entry(entry_mode: str) -> bool:

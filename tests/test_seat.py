@@ -135,6 +135,97 @@ def test_enter_omits_optional_args_it_was_not_given():
     assert mcp.named("session_enter") == [{"app_id": "ada", "session_id": "s-2"}]
 
 
+# -- wake policy resolution (sealed 3566adb5) -------------------------------
+
+
+def test_enter_resolves_the_role_default_wake_policy_from_role():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor")}),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.role == "auditor"
+    assert entry.wake_policy is not None
+    assert entry.wake_policy.source == "role_default"
+    assert entry.wake_policy.permits("Read")
+    assert not entry.wake_policy.permits("Write")
+    assert entry.wake_policy_error == ""
+
+
+def test_enter_an_unknown_role_carries_a_wake_policy_error_not_a_seatrefused():
+    """A role missing from the table must not raise out of enter() — that
+    stays enter()'s existing refusal semantics (SeatRefused on a broker
+    error/blockers) untouched. The wake CALLER decides whether to refuse to
+    start (sealed 3566adb5), not enter()."""
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="nonexistent-role")}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "nonexistent-role" in entry.wake_policy_error
+
+
+def test_enter_prefers_an_explicit_manifest_wake_policy_over_the_role_default():
+    manifest_policy = {"allow": ["Read", "Write"], "write_scope": "packet_worktree"}
+    entry = _seat.enter(
+        FakeMCP(
+            {"session_enter": _entered(role="auditor", wake_policy=manifest_policy)}
+        ),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy.source == "manifest"
+    assert entry.wake_policy.permits("Write"), (
+        "manifest wins over auditor's role default"
+    )
+
+
+def test_enter_a_malformed_manifest_wake_policy_carries_an_error_not_a_raise():
+    entry = _seat.enter(
+        FakeMCP(
+            {
+                "session_enter": _entered(
+                    role="auditor", wake_policy={"allow": ["Bash"], "write_scope": None}
+                )
+            }
+        ),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "forbidden" in entry.wake_policy_error
+
+
+def test_receipt_carries_the_resolved_wake_policy():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor")}),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    receipt = entry.receipt()
+    assert receipt["wake_policy"]["role"] == "auditor"
+    assert receipt["wake_policy"]["source"] == "role_default"
+    assert "wake_policy_error" not in receipt
+
+
+def test_receipt_carries_the_wake_policy_error_when_resolution_failed():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="nonexistent-role")}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    receipt = entry.receipt()
+    assert "nonexistent-role" in receipt["wake_policy_error"]
+    assert "wake_policy" not in receipt
+
+
 def test_an_error_result_refuses_the_seat():
     mcp = FakeMCP({"session_enter": {"error": "gate denied: 'nobody' not permitted"}})
     with pytest.raises(_seat.SeatRefused) as info:

@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -17,6 +18,7 @@ from ratatosk import seat as _seat
 from ratatosk import session as _session
 from ratatosk import sync as _sync
 from ratatosk import tools as _tools
+from ratatosk import wake_policy as _wake_policy
 from ratatosk.capabilities import CapabilityGate
 from ratatosk.history import (
     ensure_history_db,
@@ -588,6 +590,8 @@ def _run_turn_bounded(
     non_interactive: bool = False,
     on_heartbeat: Callable[[], None] | None = None,
     heartbeat_interval: float = 30.0,
+    wake_policy: _wake_policy.WakePolicy | None = None,
+    worktree_root: str | None = None,
 ) -> str:
     """The turn loop, with an optional cap on model-call iterations and an
     optional wall-clock deadline (a ``time.monotonic()`` timestamp).
@@ -717,16 +721,34 @@ def _run_turn_bounded(
                         hook_runtime=state.hooks,
                     )
                 except NeedsConfirmation as needs:
-                    note = (
-                        f"[confirm refused] {tu['name']}: {needs.decision.reason} "
-                        "— a wake has no human at the keyboard to ask"
+                    allowed, why = _wake_policy_verdict(
+                        wake_policy, tu["name"], tu["input"], worktree_root
                     )
-                    print(f"  {note}", flush=True)
-                    state.writer.write_system(note)
-                    result = (
-                        f"{tu['name']} needs confirmation ({needs.decision.reason}) "
-                        "and was refused non-interactively during a wake."
-                    )
+                    if allowed:
+                        # One-shot approval, the same shape prompt_and_dispatch
+                        # uses for a human's "y": re-enter with the verdict
+                        # already resolved by the wake policy, never by
+                        # widening the policy itself.
+                        try:
+                            result = _tools.dispatch(
+                                tu["name"],
+                                tu["input"],
+                                state.mcp_names,
+                                state.mcp_call,
+                                trusted=True,
+                                policy_store=None,
+                                hook_runtime=state.hooks,
+                            )
+                        except Exception as exc:
+                            result = f"{tu['name']} failed: {exc}."
+                    else:
+                        note = f"[confirm refused] {tu['name']}: {why}"
+                        print(f"  {note}", flush=True)
+                        state.writer.write_system(note)
+                        result = (
+                            f"{tu['name']} needs confirmation ({needs.decision.reason}) "
+                            f"and was refused by the wake policy: {why}"
+                        )
             else:
                 result = _tools.prompt_and_dispatch(
                     tu["name"],
@@ -746,6 +768,68 @@ def _run_turn_bounded(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+def _wake_policy_verdict(
+    wake_policy: _wake_policy.WakePolicy | None,
+    tool_name: str,
+    tool_input: dict,
+    worktree_root: str | None,
+) -> tuple[bool, str]:
+    """Sealed 3566adb5: is `tool_name` allowed to run WITHOUT a human, for
+    this seat's wake policy? Only ever consulted for a verdict that would
+    otherwise prompt (``NeedsConfirmation`` — Bash/Write/Edit under the
+    default PolicyStore rules today). Returns ``(allowed, reason)`` — the
+    reason is inked on a refusal and is safe to show: it names the tool and
+    the policy, never a secret.
+    """
+    if wake_policy is None:
+        return (
+            False,
+            "no wake policy resolved for this seat — refusing rather than guessing",
+        )
+    if not wake_policy.permits(tool_name):
+        return False, (
+            f"{tool_name!r} is not in this seat's wake-policy allow set "
+            f"(role={wake_policy.role!r})"
+        )
+    if tool_name in _wake_policy.SCOPED_TOOLS:
+        if wake_policy.write_scope != _wake_policy.WRITE_SCOPE_WORKTREE:
+            return False, (
+                f"{tool_name} has no write_scope for role={wake_policy.role!r} "
+                "— nothing to confine it to"
+            )
+        target = tool_input.get("file_path")
+        if not target:
+            return False, f"{tool_name} call named no file_path to scope"
+        if not worktree_root:
+            return (
+                False,
+                "no packet worktree could be named from the assignment to scope the write to",
+            )
+        try:
+            in_scope = (
+                Path(target).resolve().is_relative_to(Path(worktree_root).resolve())
+            )
+        except (OSError, ValueError):
+            in_scope = False
+        if not in_scope:
+            return False, f"{target} is outside the packet worktree {worktree_root}"
+    return True, ""
+
+
+#: A path this repo's own packets consistently name in their assignment
+#: text — "Same worktree: `/…/worktrees/<branch>`" (see 45707360, F959F793,
+#: this very packet). Best-effort only: it reads the FIRST absolute path
+#: containing "/worktrees/" out of the assignment prose, which is a
+#: convention this repo's dispatcher happens to follow, not a protocol
+#: field. No match means no scope — see _wake_policy_verdict's refusal.
+_WORKTREE_PATH_RE = re.compile(r"(/\S*?/worktrees/[^\s`\"')]+)")
+
+
+def _worktree_from_assignment(assignment: str) -> str | None:
+    match = _WORKTREE_PATH_RE.search(assignment or "")
+    return match.group(1).rstrip(".,;:") if match else None
 
 
 #: The packet's ``role`` (dispatch meta, e.g. ``dispatch_read``'s
@@ -814,6 +898,7 @@ def run_wake(
     ladder: Ladder | None = None,
     inference: InferenceRouter | None = None,
     cwd: str | None = None,
+    envelope_wake_policy_ignored: bool = False,
 ) -> str:
     """One bounded crown run for a WAKE-activated seat (sealed 3613d55e,
     slice 3 — gap 692373e803a1). This is ``crown.main``'s seat-entry +
@@ -867,6 +952,17 @@ def run_wake(
 
     print(f"  {_seat.ink(writer, entry.receipt())}", flush=True)
 
+    if envelope_wake_policy_ignored:
+        # Sealed 3566adb5, requirement 4: a WAKE envelope carrying
+        # policy-shaped fields is IGNORED, never consulted — the policy
+        # comes from the seat's own manifest/role at entry, never from the
+        # bus. Said once, on the transcript, so a reader knows it happened.
+        with contextlib.suppress(Exception):
+            writer.write_system(
+                "[wake] envelope carried wake-policy-shaped field(s) — ignored; "
+                "the policy comes from the seat's role at entry, never the bus"
+            )
+
     # From here on the seat IS entered: every exit path below must still
     # reach seat.close (F3). task_class stays at the safe default until the
     # real value is resolved, so a crash before that point still names a
@@ -874,67 +970,79 @@ def run_wake(
     task_class = DEFAULT_WAKE_TASK_CLASS
     outcome = "crashed"
     state: RuntimeState | None = None
-    try:
-        task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
-        env_map = os.environ if env is None else env
-        built_inference = inference
-        if built_inference is None:
-            built_inference = InferenceRouter.from_args(
-                task_class=task_class,
-                model=None,
-                local=False,
+    if entry.wake_policy is None:
+        # Sealed 3566adb5: "a role missing from the table means the wake
+        # refuses to start" — no turn is spent, but the seat still closes
+        # (F3 symmetry) so the packet does not sit `working` forever.
+        outcome = f"refused: {entry.wake_policy_error or 'no wake policy resolved'}"
+        with contextlib.suppress(Exception):
+            writer.write_system(f"[wake] refused to start: {outcome}")
+    else:
+        try:
+            task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
+            env_map = os.environ if env is None else env
+            built_inference = inference
+            if built_inference is None:
+                built_inference = InferenceRouter.from_args(
+                    task_class=task_class,
+                    model=None,
+                    local=False,
+                    writer=writer,
+                    echo=None,
+                    env=env_map,
+                    ladder=ladder,
+                )
+
+            model = ""
+            with contextlib.suppress(Exception):
+                usable = built_inference.resolution.usable
+                if usable:
+                    model = usable[0].model or ""
+
+            state = RuntimeState(
+                args=argparse.Namespace(
+                    trust=True, mcp=True, listen=False, deposit=False, local=False
+                ),
+                model=model,
                 writer=writer,
-                echo=None,
-                env=env_map,
-                ladder=ladder,
+                history=[],
+                system_prompt=entry.system_prompt(_load_system_prompt()),
+                all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
+                mcp_names=mcp_names or set(),
+                mcp_call=mcp_call,
+                client=None,
+                policy=PolicyStore(),
+                hooks=HookRuntime(),
+                inference=built_inference,
+                task_class=task_class,
+                seat=entry,
             )
 
-        model = ""
-        with contextlib.suppress(Exception):
-            usable = built_inference.resolution.usable
-            if usable:
-                model = usable[0].model or ""
-
-        state = RuntimeState(
-            args=argparse.Namespace(
-                trust=True, mcp=True, listen=False, deposit=False, local=False
-            ),
-            model=model,
-            writer=writer,
-            history=[],
-            system_prompt=entry.system_prompt(_load_system_prompt()),
-            all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
-            mcp_names=mcp_names or set(),
-            mcp_call=mcp_call,
-            client=None,
-            policy=PolicyStore(),
-            hooks=HookRuntime(),
-            inference=built_inference,
-            task_class=task_class,
-            seat=entry,
-        )
-
-        prompt = entry.assignment.strip() or (
-            "Work the assigned packet — see the persona and assignment above."
-        )
-        deadline = time.monotonic() + max(0.0, wall_clock_seconds)
-        outcome = _run_turn_bounded(
-            state,
-            prompt,
-            max_iterations=max_turns,
-            deadline=deadline,
-            non_interactive=True,
-            on_heartbeat=on_heartbeat,
-            heartbeat_interval=heartbeat_interval,
-        )
-    except LadderError as exc:
-        outcome = f"refused: ladder unusable for class={task_class}: {exc}"
-        with contextlib.suppress(Exception):
-            writer.write_system(f"[wake] {outcome}")
-    except Exception as exc:  # a crashed setup/turn still closes — never a dead wake
-        outcome = "crashed"
-        with contextlib.suppress(Exception):
-            writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
+            prompt = entry.assignment.strip() or (
+                "Work the assigned packet — see the persona and assignment above."
+            )
+            deadline = time.monotonic() + max(0.0, wall_clock_seconds)
+            outcome = _run_turn_bounded(
+                state,
+                prompt,
+                max_iterations=max_turns,
+                deadline=deadline,
+                non_interactive=True,
+                on_heartbeat=on_heartbeat,
+                heartbeat_interval=heartbeat_interval,
+                wake_policy=entry.wake_policy,
+                worktree_root=_worktree_from_assignment(entry.assignment),
+            )
+        except LadderError as exc:
+            outcome = f"refused: ladder unusable for class={task_class}: {exc}"
+            with contextlib.suppress(Exception):
+                writer.write_system(f"[wake] {outcome}")
+        except (
+            Exception
+        ) as exc:  # a crashed setup/turn still closes — never a dead wake
+            outcome = "crashed"
+            with contextlib.suppress(Exception):
+                writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
 
     if on_heartbeat is not None:
         with contextlib.suppress(Exception):

@@ -1,0 +1,60 @@
+{
+  "_doc": [
+    "Role-default WAKE POLICY table (sealed 2026-09-22, pair 3566adb5): what a",
+    "woken crown may run WITHOUT a human to confirm it. This is a stand-in for",
+    "the real source — the seat's own signed manifest, surfaced through",
+    "session_enter by willow-mcp (not built here; see the build packet's",
+    "'no broker changes' rule) — used whenever session_enter's response does",
+    "not itself carry an explicit wake_policy key.",
+    "",
+    "Bash is absent from every entry on purpose and ratatosk.wake_policy.load()",
+    "refuses to load a table that names it anywhere: Kart is the shell, never",
+    "a wake. A role missing from this table means a wake for that role refuses",
+    "to start — a silent empty policy would be an unbounded one, not a narrow",
+    "one.",
+    "",
+    "'allow' only matters for a tool whose verdict would otherwise prompt a",
+    "human (today: Bash, Write, Edit — PolicyStore's own default confirm",
+    "rules). Everything else (Read, and every MCP verb the seat's manifest",
+    "grants — task_submit among them) already resolves to ALLOW under the",
+    "existing permission gate and is listed here for readability, not because",
+    "listing it changes anything: the manifest gate still decides which MCP",
+    "verbs exist for the seat at all; this table only decides which of",
+    "crown's own local confirm-class tools may run unconfirmed.",
+    "",
+    "write_scope 'packet_worktree' additionally requires Write/Edit's target",
+    "path to resolve under the worktree the packet's own assignment names;",
+    "null means Write/Edit are refused outright for that role (no scope to",
+    "confine them to)."
+  ],
+  "roles": {
+    "auditor": {
+      "allow": ["Read", "task_submit"],
+      "write_scope": null
+    },
+    "build-work-order": {
+      "allow": ["Read", "Write", "Edit", "task_submit"],
+      "write_scope": "packet_worktree"
+    },
+    "builder": {
+      "allow": ["Read", "Write", "Edit", "task_submit"],
+      "write_scope": "packet_worktree"
+    },
+    "architect": {
+      "allow": ["Read", "task_submit"],
+      "write_scope": null
+    },
+    "librarian": {
+      "allow": ["Read", "task_submit"],
+      "write_scope": null
+    },
+    "operator": {
+      "allow": ["Read", "task_submit"],
+      "write_scope": null
+    },
+    "witness": {
+      "allow": ["Read", "task_submit"],
+      "write_scope": null
+    }
+  }
+}
