@@ -76,12 +76,20 @@
 #                              willow-mcp child's WILLOW_HOME (mcp_client.py
 #                              forwards every WILLOW_*/RATATOSK_*/PG* var it
 #                              sees in ITS OWN env to the spawned child)
-#   WILLOW_MCP_APPS_ROOT, WILLOW_MCP_PYTHON — willow-mcp's own MCP
-#                              coordinates; WILLOW_MCP_PYTHON is read
-#                              directly by default_mcp_argv() (see above),
-#                              WILLOW_MCP_APPS_ROOT is forwarded to the
-#                              spawned child so it resolves this seat's own
-#                              manifest and app tree
+#   WILLOW_MCP_APPS_ROOT — willow-mcp's own MCP coordinate, forwarded to
+#                              the spawned child so it resolves this seat's
+#                              own manifest and app tree
+# WILLOW_MCP_PYTHON is NOT one of the env-file keys kept above — it is SET
+# explicitly below (`Environment=WILLOW_MCP_PYTHON=@PYTHON@`), because
+# nothing else supplies it: $WILLOW_HOME/env does not carry it and the
+# broker's own environment has none either (Loki B4415DF9 — merely
+# refraining from unsetting a key that was never set fixes nothing;
+# default_mcp_argv() reads it correctly, but an unset variable reads as
+# unset regardless of how carefully it was left alone). render_values()
+# fills @PYTHON@ with the INSTALLING broker's own interpreter — the one
+# that already has `willow_mcp` importable — so this line is what actually
+# stops the spawn from falling back to ratatosk's own venv (which does
+# not have the package) and spinning in Restart=on-failure forever.
 #   ANTHROPIC_API_KEY, GEMINI_API_KEY — Loki is an auditor (audit-class
 #                              ladder rungs); provider_ladder.json's audit
 #                              class names anthropic and gemini rungs, so
@@ -135,6 +143,12 @@ Type=simple
 WorkingDirectory=@HOME@/github/willow-memory/ratatosk
 EnvironmentFile=@WILLOW_HOME@/env
 UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY OPENROUTER_API_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_STORE_ROOT WILLOW_VAULT_BOX
+# Nothing else supplies WILLOW_MCP_PYTHON (see the header comment above) —
+# set explicitly from @PYTHON@, the installing broker's own interpreter,
+# so ratatosk.mcp_client.default_mcp_argv() spawns willow-mcp with an
+# interpreter that actually has the package, instead of falling back to
+# ratatosk's own venv.
+Environment=WILLOW_MCP_PYTHON=@PYTHON@
 ExecStart=@HOME@/github/willow-memory/ratatosk/.venv/bin/ratatosk-listen --app-id loki --wake-turns 8 --wake-seconds 600
 # SIGTERM reaches SeatDaemon.request_stop via the signal handler installed in
 # ratatosk.daemon.main; the loop exits at the next poll boundary and tears
