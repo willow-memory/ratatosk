@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.10.0](https://github.com/willow-memory/ratatosk/compare/v1.9.0...v1.10.0) (2026-09-22)
+
+
+### Added
+
+* **daemon:** SeatDaemon.activate becomes one bounded crown run ([53304d0](https://github.com/willow-memory/ratatosk/commit/53304d07ea20f952ddb68944cdb54b9dedb1bdbd))
+* **daemon:** SeatDaemon.activate becomes one bounded crown run ([#52](https://github.com/willow-memory/ratatosk/issues/52)) ([0c341f3](https://github.com/willow-memory/ratatosk/commit/0c341f3acc20604d419e9562ba256c9c86d46d18))
+
+
+### Fixed
+
+* **daemon:** rework wake per Loki's 8 findings (3564BE3C) ([6f321d8](https://github.com/willow-memory/ratatosk/commit/6f321d805a8b5481d8185d4950b0edf45ef7379a))
+* **lint:** ruff C408/PLR0133 in test_daemon.py, format to match CI (F959F793) ([e73b559](https://github.com/willow-memory/ratatosk/commit/e73b55916d63af18db36b786591ba18142d900d2))
+
 ## [1.9.0](https://github.com/willow-memory/ratatosk/compare/v1.8.0...v1.9.0) (2026-09-21)
 
 
