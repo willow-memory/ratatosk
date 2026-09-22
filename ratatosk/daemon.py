@@ -386,6 +386,15 @@ class SeatDaemon:
             )
         extra = env.extra if isinstance(env.extra, dict) else {}
         dispatch_id = extra.get("dispatch_id")
+        # Sealed 3566adb5, requirement 4: the wake policy is read from the
+        # seat's manifest/role at entry, NEVER from the WAKE envelope or the
+        # bus. Any policy-shaped key the envelope carried is dropped here
+        # (never read into anything) and only its presence is passed
+        # through so run_wake can say, on the transcript, that it was
+        # ignored rather than silently vanishing.
+        envelope_wake_policy_ignored = any(
+            key in extra for key in ("wake_policy", "allow", "write_scope")
+        )
         self._wake_busy = True
         try:
             return crown.run_wake(
@@ -399,6 +408,7 @@ class SeatDaemon:
                 wall_clock_seconds=self.wake_seconds,
                 on_heartbeat=self.emit_heartbeat,
                 heartbeat_interval=self.heartbeat_interval,
+                envelope_wake_policy_ignored=envelope_wake_policy_ignored,
             )
         finally:
             self._wake_busy = False

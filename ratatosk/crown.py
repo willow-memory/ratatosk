@@ -6,17 +6,19 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ratatosk import grove as _grove
 from ratatosk import seat as _seat
 from ratatosk import session as _session
 from ratatosk import sync as _sync
 from ratatosk import tools as _tools
+from ratatosk import wake_policy as _wake_policy
 from ratatosk.capabilities import CapabilityGate
 from ratatosk.history import (
     ensure_history_db,
@@ -588,6 +590,8 @@ def _run_turn_bounded(
     non_interactive: bool = False,
     on_heartbeat: Callable[[], None] | None = None,
     heartbeat_interval: float = 30.0,
+    wake_policy: _wake_policy.WakePolicy | None = None,
+    worktree_root: str | None = None,
 ) -> str:
     """The turn loop, with an optional cap on model-call iterations and an
     optional wall-clock deadline (a ``time.monotonic()`` timestamp).
@@ -705,7 +709,45 @@ def _run_turn_bounded(
 
         tool_results = []
         for tu in tool_uses:
-            if non_interactive:
+            if non_interactive and tu["name"] in _wake_policy.GATED_TOOLS:
+                # Loki FC9EDFB8 finding 5: checked BEFORE ``_tools.dispatch``
+                # is ever called, unconditionally — not from inside a
+                # NeedsConfirmation handler. The old shape only consulted
+                # the wake policy when the (shared, mutable)
+                # $WILLOW_HOME/ratatosk/policy.json still said CONFIRM for
+                # this tool; an operator loosening it in any REPL
+                # (`/permissions set Write allow`) made the tool resolve
+                # straight to ALLOW, so the exception never raised and the
+                # wake policy never ran at all. Bash/Write/Edit are now the
+                # wake policy's business regardless of what that file says.
+                allowed, why = _wake_policy_verdict(
+                    wake_policy, tu["name"], tu["input"], worktree_root
+                )
+                if allowed:
+                    # hook_runtime=None: a PreTool hook can rewrite
+                    # tool_input (merged_input) AFTER this scope check ran
+                    # (Loki FC9EDFB8 LOW) — hooks are an interactive-REPL
+                    # feature a wake does not need, so they are skipped
+                    # entirely for a gated tool rather than trusted not to
+                    # move the target out from under the check.
+                    try:
+                        result = _tools.dispatch(
+                            tu["name"],
+                            tu["input"],
+                            state.mcp_names,
+                            state.mcp_call,
+                            trusted=True,
+                            policy_store=None,
+                            hook_runtime=None,
+                        )
+                    except Exception as exc:
+                        result = f"{tu['name']} failed: {exc}."
+                else:
+                    note = f"[confirm refused] {tu['name']}: {why}"
+                    print(f"  {note}", flush=True)
+                    state.writer.write_system(note)
+                    result = f"{tu['name']} was refused by the wake policy: {why}"
+            elif non_interactive:
                 try:
                     result = _tools.dispatch(
                         tu["name"],
@@ -717,16 +759,35 @@ def _run_turn_bounded(
                         hook_runtime=state.hooks,
                     )
                 except NeedsConfirmation as needs:
-                    note = (
-                        f"[confirm refused] {tu['name']}: {needs.decision.reason} "
-                        "— a wake has no human at the keyboard to ask"
+                    # Any OTHER tool a (future, custom) PolicyStore rule
+                    # marks CONFIRM — the gated set above covers today's
+                    # defaults (Bash/Write/Edit); this still judges anything
+                    # else against the same wake policy rather than ever
+                    # prompting.
+                    allowed, why = _wake_policy_verdict(
+                        wake_policy, tu["name"], tu["input"], worktree_root
                     )
-                    print(f"  {note}", flush=True)
-                    state.writer.write_system(note)
-                    result = (
-                        f"{tu['name']} needs confirmation ({needs.decision.reason}) "
-                        "and was refused non-interactively during a wake."
-                    )
+                    if allowed:
+                        try:
+                            result = _tools.dispatch(
+                                tu["name"],
+                                tu["input"],
+                                state.mcp_names,
+                                state.mcp_call,
+                                trusted=True,
+                                policy_store=None,
+                                hook_runtime=state.hooks,
+                            )
+                        except Exception as exc:
+                            result = f"{tu['name']} failed: {exc}."
+                    else:
+                        note = f"[confirm refused] {tu['name']}: {why}"
+                        print(f"  {note}", flush=True)
+                        state.writer.write_system(note)
+                        result = (
+                            f"{tu['name']} needs confirmation ({needs.decision.reason}) "
+                            f"and was refused by the wake policy: {why}"
+                        )
             else:
                 result = _tools.prompt_and_dispatch(
                     tu["name"],
@@ -746,6 +807,108 @@ def _run_turn_bounded(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+def _wake_policy_verdict(
+    wake_policy: _wake_policy.WakePolicy | None,
+    tool_name: str,
+    tool_input: dict,
+    worktree_root: str | None,
+) -> tuple[bool, str]:
+    """Sealed 3566adb5: is `tool_name` allowed to run WITHOUT a human, for
+    this seat's wake policy? Only ever consulted for a verdict that would
+    otherwise prompt (``NeedsConfirmation`` — Bash/Write/Edit under the
+    default PolicyStore rules today). Returns ``(allowed, reason)`` — the
+    reason is inked on a refusal and is safe to show: it names the tool and
+    the policy, never a secret.
+    """
+    if wake_policy is None:
+        return (
+            False,
+            "no wake policy resolved for this seat — refusing rather than guessing",
+        )
+    if not wake_policy.permits(tool_name):
+        return False, (
+            f"{tool_name!r} is not in this seat's wake-policy allow set "
+            f"(role={wake_policy.role!r})"
+        )
+    if tool_name in _wake_policy.SCOPED_TOOLS:
+        if wake_policy.write_scope != _wake_policy.WRITE_SCOPE_WORKTREE:
+            return False, (
+                f"{tool_name} has no write_scope for role={wake_policy.role!r} "
+                "— nothing to confine it to"
+            )
+        target = tool_input.get("file_path")
+        if not target:
+            return False, f"{tool_name} call named no file_path to scope"
+        if not worktree_root:
+            return (
+                False,
+                "no packet worktree could be named from the assignment to scope the write to",
+            )
+        try:
+            in_scope = (
+                Path(target).resolve().is_relative_to(Path(worktree_root).resolve())
+            )
+        except (OSError, ValueError):
+            in_scope = False
+        if not in_scope:
+            return False, f"{target} is outside the packet worktree {worktree_root}"
+    return True, ""
+
+
+#: A path this repo's own packets consistently name in their assignment
+#: text — "Same worktree: `/…/worktrees/<branch>`" (see 45707360, F959F793,
+#: this very packet). Best-effort only: it reads the FIRST absolute path
+#: containing "/worktrees/" (POSIX) or "\worktrees\" (Windows — CI's
+#: test-windows legs run this code on a real Windows runner, where the
+#: assignment text names a drive-letter path like
+#: `C:\Users\runneradmin\...\worktrees\feat-x`; Loki F57D5EC8 caught the
+#: POSIX-only pattern never matching there, degrading every build-seat
+#: Write to "no packet worktree could be named") out of the assignment
+#: prose, which is a convention this repo's dispatcher happens to follow,
+#: not a protocol field. No match means no scope — see
+#: _wake_policy_verdict's refusal.
+_WORKTREE_PATH_RE = re.compile(
+    r"(/\S*?/worktrees/[^\s`\"')]+"
+    r"|[A-Za-z]:\\\S*?\\worktrees\\[^\s`\"')]+)"
+)
+
+
+def _worktree_path_parts(raw: str) -> tuple[str, ...]:
+    """``raw``'s path parts, read with the separator convention ITS OWN
+    text uses — a drive-letter or backslash-bearing path is read with
+    ``PureWindowsPath`` even when THIS process is running on POSIX (a
+    Windows-shaped assignment can be exercised in a Linux test this way,
+    and — the real case — a Linux-built packet's own text is never handed
+    to a Windows-running seat, so the string's own shape is always the
+    right signal); everything else with ``PurePosixPath``. Plain ``Path``
+    would silently misread a backslash-separated string as one literal
+    filename on a POSIX box, which is exactly how the ``..`` check below
+    used to pass a Windows path straight through unexamined."""
+    if re.match(r"^[A-Za-z]:\\", raw) or "\\" in raw:
+        return PureWindowsPath(raw).parts
+    return PurePosixPath(raw).parts
+
+
+def _worktree_from_assignment(assignment: str) -> str | None:
+    match = _WORKTREE_PATH_RE.search(assignment or "")
+    if not match:
+        return None
+    raw = match.group(1).rstrip(".,;:")
+    # Loki FC9EDFB8 finding 4: a crafted assignment naming
+    # ".../worktrees/feat/../../../.." passed the old scope check, because
+    # .resolve() on THIS string collapses the ".." itself — silently
+    # widening "the worktree" to whatever ancestor directory the ".."
+    # sequence points at (as far up as filesystem root), and then any
+    # target "under" that oversized scope was accepted. A ".." anywhere in
+    # the named path is refused outright, before resolve() ever runs on
+    # it — never trusted to cancel itself out safely. Checked with the
+    # path's OWN separator convention (see _worktree_path_parts) so a
+    # Windows-shaped ".." survives this check exactly as a POSIX one does.
+    if ".." in _worktree_path_parts(raw):
+        return None
+    return raw
 
 
 #: The packet's ``role`` (dispatch meta, e.g. ``dispatch_read``'s
@@ -814,6 +977,7 @@ def run_wake(
     ladder: Ladder | None = None,
     inference: InferenceRouter | None = None,
     cwd: str | None = None,
+    envelope_wake_policy_ignored: bool = False,
 ) -> str:
     """One bounded crown run for a WAKE-activated seat (sealed 3613d55e,
     slice 3 — gap 692373e803a1). This is ``crown.main``'s seat-entry +
@@ -867,6 +1031,17 @@ def run_wake(
 
     print(f"  {_seat.ink(writer, entry.receipt())}", flush=True)
 
+    if envelope_wake_policy_ignored:
+        # Sealed 3566adb5, requirement 4: a WAKE envelope carrying
+        # policy-shaped fields is IGNORED, never consulted — the policy
+        # comes from the seat's own manifest/role at entry, never from the
+        # bus. Said once, on the transcript, so a reader knows it happened.
+        with contextlib.suppress(Exception):
+            writer.write_system(
+                "[wake] envelope carried wake-policy-shaped field(s) — ignored; "
+                "the policy comes from the seat's role at entry, never the bus"
+            )
+
     # From here on the seat IS entered: every exit path below must still
     # reach seat.close (F3). task_class stays at the safe default until the
     # real value is resolved, so a crash before that point still names a
@@ -874,67 +1049,79 @@ def run_wake(
     task_class = DEFAULT_WAKE_TASK_CLASS
     outcome = "crashed"
     state: RuntimeState | None = None
-    try:
-        task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
-        env_map = os.environ if env is None else env
-        built_inference = inference
-        if built_inference is None:
-            built_inference = InferenceRouter.from_args(
-                task_class=task_class,
-                model=None,
-                local=False,
+    if entry.wake_policy is None:
+        # Sealed 3566adb5: "a role missing from the table means the wake
+        # refuses to start" — no turn is spent, but the seat still closes
+        # (F3 symmetry) so the packet does not sit `working` forever.
+        outcome = f"refused: {entry.wake_policy_error or 'no wake policy resolved'}"
+        with contextlib.suppress(Exception):
+            writer.write_system(f"[wake] refused to start: {outcome}")
+    else:
+        try:
+            task_class = _wake_task_class(mcp_call, app_id, dispatch_id)
+            env_map = os.environ if env is None else env
+            built_inference = inference
+            if built_inference is None:
+                built_inference = InferenceRouter.from_args(
+                    task_class=task_class,
+                    model=None,
+                    local=False,
+                    writer=writer,
+                    echo=None,
+                    env=env_map,
+                    ladder=ladder,
+                )
+
+            model = ""
+            with contextlib.suppress(Exception):
+                usable = built_inference.resolution.usable
+                if usable:
+                    model = usable[0].model or ""
+
+            state = RuntimeState(
+                args=argparse.Namespace(
+                    trust=True, mcp=True, listen=False, deposit=False, local=False
+                ),
+                model=model,
                 writer=writer,
-                echo=None,
-                env=env_map,
-                ladder=ladder,
+                history=[],
+                system_prompt=entry.system_prompt(_load_system_prompt()),
+                all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
+                mcp_names=mcp_names or set(),
+                mcp_call=mcp_call,
+                client=None,
+                policy=PolicyStore(),
+                hooks=HookRuntime(),
+                inference=built_inference,
+                task_class=task_class,
+                seat=entry,
             )
 
-        model = ""
-        with contextlib.suppress(Exception):
-            usable = built_inference.resolution.usable
-            if usable:
-                model = usable[0].model or ""
-
-        state = RuntimeState(
-            args=argparse.Namespace(
-                trust=True, mcp=True, listen=False, deposit=False, local=False
-            ),
-            model=model,
-            writer=writer,
-            history=[],
-            system_prompt=entry.system_prompt(_load_system_prompt()),
-            all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
-            mcp_names=mcp_names or set(),
-            mcp_call=mcp_call,
-            client=None,
-            policy=PolicyStore(),
-            hooks=HookRuntime(),
-            inference=built_inference,
-            task_class=task_class,
-            seat=entry,
-        )
-
-        prompt = entry.assignment.strip() or (
-            "Work the assigned packet — see the persona and assignment above."
-        )
-        deadline = time.monotonic() + max(0.0, wall_clock_seconds)
-        outcome = _run_turn_bounded(
-            state,
-            prompt,
-            max_iterations=max_turns,
-            deadline=deadline,
-            non_interactive=True,
-            on_heartbeat=on_heartbeat,
-            heartbeat_interval=heartbeat_interval,
-        )
-    except LadderError as exc:
-        outcome = f"refused: ladder unusable for class={task_class}: {exc}"
-        with contextlib.suppress(Exception):
-            writer.write_system(f"[wake] {outcome}")
-    except Exception as exc:  # a crashed setup/turn still closes — never a dead wake
-        outcome = "crashed"
-        with contextlib.suppress(Exception):
-            writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
+            prompt = entry.assignment.strip() or (
+                "Work the assigned packet — see the persona and assignment above."
+            )
+            deadline = time.monotonic() + max(0.0, wall_clock_seconds)
+            outcome = _run_turn_bounded(
+                state,
+                prompt,
+                max_iterations=max_turns,
+                deadline=deadline,
+                non_interactive=True,
+                on_heartbeat=on_heartbeat,
+                heartbeat_interval=heartbeat_interval,
+                wake_policy=entry.wake_policy,
+                worktree_root=_worktree_from_assignment(entry.assignment),
+            )
+        except LadderError as exc:
+            outcome = f"refused: ladder unusable for class={task_class}: {exc}"
+            with contextlib.suppress(Exception):
+                writer.write_system(f"[wake] {outcome}")
+        except (
+            Exception
+        ) as exc:  # a crashed setup/turn still closes — never a dead wake
+            outcome = "crashed"
+            with contextlib.suppress(Exception):
+                writer.write_system(f"[wake crashed] {exc.__class__.__name__}: {exc}")
 
     if on_heartbeat is not None:
         with contextlib.suppress(Exception):

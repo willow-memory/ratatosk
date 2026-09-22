@@ -37,6 +37,13 @@ def _entered(**overrides) -> dict:
         "assignment": "# Build the thing\n\nOne bite.",
         "closeout_tools": ["handoff_write_v4"],
         "blockers": {"count": 0, "items": []},
+        # sealed 3566adb5 F6 (Loki FC9EDFB8): a non-empty persona_file is
+        # this module's proxy for "this app_id resolved to a real fleet
+        # persona registry entry" — required before a wake policy is
+        # trusted for the role. Default present so existing tests that do
+        # not care about registration keep resolving; the unregistered-seat
+        # tests below override it to "".
+        "persona_file": "/fleet/personas/hanuman.md",
     }
     result.update(overrides)
     return result
@@ -133,6 +140,137 @@ def test_enter_omits_optional_args_it_was_not_given():
     mcp = FakeMCP({"session_enter": _entered(entry_mode="human", dispatch_id=None)})
     _seat.enter(mcp, app_id="ada", session_id="s-2")
     assert mcp.named("session_enter") == [{"app_id": "ada", "session_id": "s-2"}]
+
+
+# -- wake policy resolution (sealed 3566adb5) -------------------------------
+
+
+def test_enter_resolves_the_role_default_wake_policy_from_role():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor")}),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.role == "auditor"
+    assert entry.wake_policy is not None
+    assert entry.wake_policy.source == "role_default"
+    assert entry.wake_policy.permits("Read")
+    assert not entry.wake_policy.permits("Write")
+    assert entry.wake_policy_error == ""
+
+
+def test_enter_an_unknown_role_carries_a_wake_policy_error_not_a_seatrefused():
+    """A role missing from the table must not raise out of enter() — that
+    stays enter()'s existing refusal semantics (SeatRefused on a broker
+    error/blockers) untouched. The wake CALLER decides whether to refuse to
+    start (sealed 3566adb5), not enter()."""
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="nonexistent-role")}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "nonexistent-role" in entry.wake_policy_error
+
+
+def test_enter_prefers_an_explicit_manifest_wake_policy_over_the_role_default():
+    manifest_policy = {"allow": ["Read", "Write"], "write_scope": "packet_worktree"}
+    entry = _seat.enter(
+        FakeMCP(
+            {"session_enter": _entered(role="auditor", wake_policy=manifest_policy)}
+        ),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy.source == "manifest"
+    assert entry.wake_policy.permits("Write"), (
+        "manifest wins over auditor's role default"
+    )
+
+
+def test_enter_a_malformed_manifest_wake_policy_carries_an_error_not_a_raise():
+    entry = _seat.enter(
+        FakeMCP(
+            {
+                "session_enter": _entered(
+                    role="auditor", wake_policy={"allow": ["Bash"], "write_scope": None}
+                )
+            }
+        ),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "forbidden" in entry.wake_policy_error
+
+
+def test_receipt_carries_the_resolved_wake_policy():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor")}),
+        app_id="loki",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    receipt = entry.receipt()
+    assert receipt["wake_policy"]["role"] == "auditor"
+    assert receipt["wake_policy"]["source"] == "role_default"
+    assert "wake_policy_error" not in receipt
+
+
+def test_receipt_carries_the_wake_policy_error_when_resolution_failed():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="nonexistent-role")}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    receipt = entry.receipt()
+    assert "nonexistent-role" in receipt["wake_policy_error"]
+    assert "wake_policy" not in receipt
+
+
+def test_enter_refuses_a_wake_policy_with_no_registry_persona_file(
+    tmp_path, monkeypatch
+):
+    """Loki FC9EDFB8 finding 6: an unregistered app_id can have `role` be
+    whatever the dispatching packet's own meta.role said — bus-authored,
+    not registry-authored. Even a role string that matches a real table
+    entry (here "auditor", which WOULD grant Write=no/Read=yes if trusted)
+    must not resolve without persona_file naming a real registry entry."""
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered(role="auditor", persona_file="")}),
+        app_id="nobody-registered",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "not registry-backed" in entry.wake_policy_error
+    assert "persona_file" in entry.wake_policy_error
+
+
+def test_enter_refuses_even_a_manifest_carried_policy_with_no_persona_file():
+    """The persona_file check runs before either source (table or
+    manifest-carried) is consulted — an unregistered seat gets neither."""
+    entry = _seat.enter(
+        FakeMCP(
+            {
+                "session_enter": _entered(
+                    role="auditor",
+                    persona_file="",
+                    wake_policy={"allow": ["Read", "Write"], "write_scope": None},
+                )
+            }
+        ),
+        app_id="nobody-registered",
+        session_id="s-1",
+        dispatch_id="PKT1",
+    )
+    assert entry.wake_policy is None
+    assert "not registry-backed" in entry.wake_policy_error
 
 
 def test_an_error_result_refuses_the_seat():

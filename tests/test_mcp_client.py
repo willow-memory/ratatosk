@@ -1,6 +1,41 @@
+import sys
+
 import pytest
 
 from ratatosk import mcp_client
+
+# -- default_mcp_argv (Loki FC9EDFB8 finding 3) -----------------------------
+
+
+def test_default_mcp_argv_uses_willow_mcp_python_when_set(monkeypatch):
+    """A woken seat's own venv has no willow_mcp package; spawning it with
+    THIS process's sys.executable used to import-fail, time out the MCP
+    init handshake, and spin under Restart=on-failure forever. The
+    broker's own interpreter (WILLOW_MCP_PYTHON, kept by the unit
+    template's env file) must be used instead."""
+    monkeypatch.delenv("RATATOSK_MCP_COMMAND", raising=False)
+    monkeypatch.delenv("RATATOSK_MCP_MODULE", raising=False)
+    monkeypatch.setenv("WILLOW_MCP_PYTHON", "/opt/willow-mcp/.venv/bin/python")
+    assert mcp_client.default_mcp_argv() == [
+        "/opt/willow-mcp/.venv/bin/python",
+        "-m",
+        "willow_mcp",
+    ]
+
+
+def test_default_mcp_argv_falls_back_to_this_interpreter_when_unset(monkeypatch):
+    monkeypatch.delenv("RATATOSK_MCP_COMMAND", raising=False)
+    monkeypatch.delenv("RATATOSK_MCP_MODULE", raising=False)
+    monkeypatch.delenv("WILLOW_MCP_PYTHON", raising=False)
+    assert mcp_client.default_mcp_argv() == [sys.executable, "-m", "willow_mcp"]
+
+
+def test_default_mcp_argv_command_override_still_wins_over_willow_mcp_python(
+    monkeypatch,
+):
+    monkeypatch.setenv("RATATOSK_MCP_COMMAND", "/custom/python -m custom_mod")
+    monkeypatch.setenv("WILLOW_MCP_PYTHON", "/opt/willow-mcp/.venv/bin/python")
+    assert mcp_client.default_mcp_argv() == ["/custom/python", "-m", "custom_mod"]
 
 
 def test_server_env_forwards_fleet_config(monkeypatch):
