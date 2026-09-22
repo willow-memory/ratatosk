@@ -30,7 +30,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ratatosk import grove
+from ratatosk import crown, grove
+from ratatosk import seat as _seat
 from ratatosk.listener import BusListener
 from ratatosk.paths import ratatosk_data_root
 from ratatosk.protocol.envelope import Envelope
@@ -278,7 +279,33 @@ class SeatDaemon:
         seal_offset_path: str | Path | None = None,
         on_seal: Callable[[dict], None] | None = None,
         seal_predicate: Callable[[dict], bool] | None = None,
+        crown_app_id: str | None = None,
+        mcp_extra_tools: list[dict] | None = None,
+        mcp_names: set[str] | None = None,
+        wake_turns: int = crown.DEFAULT_WAKE_TURNS,
+        wake_seconds: float = crown.DEFAULT_WAKE_SECONDS,
     ):
+        # crown_app_id wires the bounded-crown-run activation (sealed
+        # 3613d55e slice 3): a WAKE becomes ratatosk.crown.run_wake(...)
+        # instead of default_activate's honest no-op. An explicit
+        # ``activate`` still wins — this only supplies the default when the
+        # caller did not hand one in, the same precedence default_activate
+        # already had.
+        self.crown_app_id = crown_app_id
+        self.mcp_extra_tools = mcp_extra_tools or []
+        self.mcp_names = mcp_names or set()
+        self.wake_turns = wake_turns
+        self.wake_seconds = wake_seconds
+        # One wake at a time (assignment point 5): BusListener.run_once
+        # already processes one message per call, so within a single
+        # SeatDaemon this flag cannot actually race under the stock
+        # run_forever loop — it exists as an explicit, testable contract
+        # rather than an implicit one, and as a guard against a future
+        # caller pumping run_once from more than one place at once.
+        self._wake_busy = False
+        if activate is None and crown_app_id:
+            activate = self._crown_activate
+
         # Raises ValueError on an unset channel — same refusal as
         # BusListener/crown --listen, inherited rather than duplicated.
         self.listener = BusListener(
@@ -331,6 +358,50 @@ class SeatDaemon:
     def emit_heartbeat(self) -> bool:
         self._last_heartbeat = time.monotonic()
         return self.listener.emit_heartbeat()
+
+    def _crown_activate(self, env: Envelope) -> str:
+        """The default ``activate`` when ``crown_app_id`` is set: one bounded
+        crown run per WAKE (``ratatosk.crown.run_wake``). See that
+        function's docstring for what it does; this method only resolves
+        which dispatch_id the envelope names, guards against a second wake
+        overlapping the one already running, and wires the daemon's own
+        heartbeat in so liveness is still observable across a wake that runs
+        longer than one heartbeat_interval.
+
+        ``dispatch_id`` comes from ``env.extra`` — anything the WAKE's JSON
+        carried beyond the envelope's own named fields
+        (``parse_grove_message``/``_envelope_from_dict`` route unknown keys
+        there). ``app_id`` does NOT: this daemon acts as ONE seat,
+        ``crown_app_id``, fixed at process start (``--app-id``) — never
+        anything a message on the bus could name instead (Loki 3564BE3C F6:
+        a prior version read ``extra.get("app_id")`` first, so any sender
+        able to post a WAKE on this channel could pick which seat the
+        daemon entered as, with no sender check standing between the bus
+        and ``session_enter``).
+        """
+        if self._wake_busy:
+            return (
+                f"[ratatosk] wake trace={env.trace_id} busy — a wake is "
+                "already in progress on this daemon, not queued"
+            )
+        extra = env.extra if isinstance(env.extra, dict) else {}
+        dispatch_id = extra.get("dispatch_id")
+        self._wake_busy = True
+        try:
+            return crown.run_wake(
+                self.listener.mcp_call,
+                app_id=self.crown_app_id,
+                dispatch_id=str(dispatch_id) if dispatch_id else None,
+                trace_id=env.trace_id,
+                mcp_extra_tools=self.mcp_extra_tools,
+                mcp_names=self.mcp_names,
+                max_turns=self.wake_turns,
+                wall_clock_seconds=self.wake_seconds,
+                on_heartbeat=self.emit_heartbeat,
+                heartbeat_interval=self.heartbeat_interval,
+            )
+        finally:
+            self._wake_busy = False
 
     def _heartbeat_due(self, now: float) -> bool:
         return (now - self._last_heartbeat) >= self.heartbeat_interval
@@ -411,12 +482,46 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--heartbeat-interval", type=float, default=DEFAULT_HEARTBEAT_INTERVAL
     )
+    parser.add_argument(
+        "--app-id",
+        dest="app_id",
+        default=None,
+        help=(
+            "Run as this fleet seat: a WAKE naming a dispatch_id becomes one "
+            "bounded crown run (ratatosk.crown.run_wake) instead of the "
+            "default honest no-op. Never 'willow' (seat.py rule 2)."
+        ),
+    )
+    parser.add_argument(
+        "--wake-turns",
+        type=int,
+        default=crown.DEFAULT_WAKE_TURNS,
+        help="Max model-call iterations per WAKE before it refuses (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--wake-seconds",
+        type=float,
+        default=crown.DEFAULT_WAKE_SECONDS,
+        help="Wall-clock budget per WAKE, in seconds, before it refuses (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
+
+    if args.app_id:
+        try:
+            _seat.check_app_id(args.app_id)
+        except _seat.SeatRefused as exc:
+            parser.error(str(exc))
+        # Same three-variable agreement crown.py's --app-id sets: the
+        # willow-mcp child, Grove sends, and the listener's own node must
+        # all name the same seat.
+        os.environ["WILLOW_APP_ID"] = args.app_id
+        os.environ["RATATOSK_APP_ID"] = args.app_id
+        os.environ["WILLOW_AGENT_NAME"] = args.app_id
 
     from ratatosk import mcp_client
 
     print("  [mcp] connecting…", flush=True)
-    mcp_client.start()
+    mcp_extra_tools, mcp_names = mcp_client.start()
     mcp_call = mcp_client.call
     bound = grove.connect(mcp_call)
     if not bound.ok:
@@ -433,6 +538,11 @@ def main(argv: list[str] | None = None) -> None:
             mcp_call=mcp_call,
             poll_interval=args.poll_interval,
             heartbeat_interval=args.heartbeat_interval,
+            crown_app_id=args.app_id,
+            mcp_extra_tools=mcp_extra_tools,
+            mcp_names=mcp_names,
+            wake_turns=args.wake_turns,
+            wake_seconds=args.wake_seconds,
         )
     except ValueError as exc:
         refused = str(exc)
