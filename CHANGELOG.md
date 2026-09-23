@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.1](https://github.com/willow-memory/ratatosk/compare/v1.11.0...v1.11.1) (2026-09-23)
+
+
+### Fixed
+
+* **ladder:** retarget ollama floor to box tags ([4a8f2db](https://github.com/willow-memory/ratatosk/commit/4a8f2db82fd5483507fd1133505b91cd1a9e2abd))
+* **ladder:** retarget ollama floor to box tags ([#56](https://github.com/willow-memory/ratatosk/issues/56)) ([8e03919](https://github.com/willow-memory/ratatosk/commit/8e0391979e422b5c95719b314fb99407d92d7078))
+
 ## [1.11.0](https://github.com/willow-memory/ratatosk/compare/v1.10.0...v1.11.0) (2026-09-22)
 
 
