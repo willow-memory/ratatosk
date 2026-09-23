@@ -90,16 +90,16 @@
       "base_url": "http://127.0.0.1:11434",
       "key_env": null,
       "models": {
-        "fast": "llama3.2:3b",
-        "classify": "llama3.2:3b",
-        "operate": "llama3.2:3b",
+        "fast": "qwen2.5:0.5b",
+        "classify": "willow-lane4-3b:latest",
+        "operate": "qwen3:4b",
         "witness": "llama3.2:3b",
-        "chat": "llama3.1:8b",
-        "summarize": "llama3.1:8b"
+        "chat": "gemma3:4b",
+        "summarize": "qwen3:4b"
       },
-      "budget": {"tier": "local", "unit": null, "note": "the floor: always reachable, never a builder"},
-      "issued": null,
-      "verify_at": null,
+      "budget": {"tier": "local", "unit": null, "note": "floor retarget 2026-09-22: chat=gemma3:4b (Kart T6T4GLVC); map unused box tags; mistral:7b / nomic-embed-text / llama3.1:8b left off the default map"},
+      "issued": "2026-09-22",
+      "verify_at": "2026-09-22",
       "status": "measured"
     },
     "anthropic": {
@@ -125,7 +125,8 @@
     "witness":   ["groq", "ollama"],
     "chat":      ["ollama", "groq"],
     "summarize": ["ollama", "groq"],
-    "classify":  ["ollama"]
+    "classify":  ["ollama"],
+    "fast":      ["ollama", "groq"]
   },
   "_classes_doc": [
     "Order within a class is the fall-through order. 'audit' keeps a cross-model rung above the builder's ladder on purpose: an audit on the same free 70b that built the thing is not an audit.",
