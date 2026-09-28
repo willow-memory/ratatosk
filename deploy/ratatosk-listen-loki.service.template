@@ -76,9 +76,34 @@
 #                              willow-mcp child's WILLOW_HOME (mcp_client.py
 #                              forwards every WILLOW_*/RATATOSK_*/PG* var it
 #                              sees in ITS OWN env to the spawned child)
+#   WILLOW_STORE_ROOT       — the willow-mcp child's SOIL store coordinate,
+#                              forwarded the same way as WILLOW_HOME above
 #   WILLOW_MCP_APPS_ROOT — willow-mcp's own MCP coordinate, forwarded to
 #                              the spawned child so it resolves this seat's
 #                              own manifest and app tree
+#
+# WILLOW_HOME and WILLOW_STORE_ROOT are NOT trusted to arrive via the env
+# file alone — they are SET explicitly below (`Environment=WILLOW_HOME=
+# @WILLOW_HOME@` / `Environment=WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@`), for
+# the same reason WILLOW_MCP_PYTHON is (next paragraph): `EnvironmentFile=
+# @WILLOW_HOME@/env` only uses WILLOW_HOME to LOCATE the file at render
+# time (render_values() fills that placeholder from the INSTALLING broker's
+# own resolved paths.willow_home()) — it says nothing about whether the
+# file's own CONTENTS define WILLOW_HOME (or WILLOW_STORE_ROOT) as a key.
+# Measured defect: the installed unit at
+# ~/.config/systemd/user/ratatosk-listen-loki.service carried NO
+# `Environment=WILLOW_HOME=` line and stripped WILLOW_STORE_ROOT in
+# UnsetEnvironment= (below), so the woken process's own WILLOW_HOME was
+# whatever `ratatosk.paths` falls back to when unset — and the willow-mcp
+# child mcp_client.py spawns, seeing no WILLOW_HOME forwarded either,
+# resolved the tombstoned `$HOME/.willow` instead of the seat's real home,
+# read a stale/unsigned manifest there, and refused entry as
+# `no_egress_lease`/`manifest_unreadable` — a network-shaped symptom of an
+# environment problem. Explicit `Environment=` lines placed AFTER both
+# EnvironmentFile= and UnsetEnvironment= always win regardless of what the
+# file does or does not define, closing that gap the same way
+# WILLOW_MCP_PYTHON's own line already does.
+#
 # WILLOW_MCP_PYTHON is NOT one of the env-file keys kept above — it is SET
 # explicitly below (`Environment=WILLOW_MCP_PYTHON=@PYTHON@`), because
 # nothing else supplies it: $WILLOW_HOME/env does not carry it and the
@@ -142,7 +167,22 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=@HOME@/github/willow-memory/ratatosk
 EnvironmentFile=@WILLOW_HOME@/env
-UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY OPENROUTER_API_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_STORE_ROOT WILLOW_VAULT_BOX
+UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY OPENROUTER_API_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_VAULT_BOX
+# An egress lease is not an entry gate (fix/lease-is-not-an-entry-blocker /
+# fix/refuse-only-entry-blockers), but this seat's WILLOW_HOME must still be
+# the real one, not a fallback — nothing else supplies it reliably (see the
+# header comment above): set explicitly from @WILLOW_HOME@, the installing
+# broker's own resolved paths.willow_home(), so both this process and the
+# willow-mcp child it spawns (mcp_client.py forwards this var to the child)
+# see the seat's real home regardless of what $WILLOW_HOME/env does or does
+# not define.
+Environment=WILLOW_HOME=@WILLOW_HOME@
+# Same reasoning as WILLOW_HOME immediately above, for the willow-mcp
+# child's SOIL store coordinate. WILLOW_STORE_ROOT is deliberately NOT in
+# UnsetEnvironment= above (it would be self-defeating to unset a key set
+# explicitly here, same rule test_deploy_templates.py already enforces for
+# WILLOW_MCP_PYTHON).
+Environment=WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@
 # Nothing else supplies WILLOW_MCP_PYTHON (see the header comment above) —
 # set explicitly from @PYTHON@, the installing broker's own interpreter,
 # so ratatosk.mcp_client.default_mcp_argv() spawns willow-mcp with an
