@@ -50,6 +50,18 @@ class SeatRefused(Exception):
     """The seat could not be taken. The message is the operator-facing reason."""
 
 
+def _blocker_scope(blocker: dict) -> str:
+    """``"entry"`` or ``"egress"`` — fail closed on anything else.
+
+    A blocker with no ``scope`` key (an older broker that predates this
+    field) or an unrecognized value is treated as ``"entry"``: refusing is
+    the safe failure mode, not the surprising one. Only a broker that
+    explicitly says ``"egress"`` earns the pass-through a lease-only closure
+    is meant to get."""
+    scope = blocker.get("scope")
+    return scope if scope in ("entry", "egress") else "entry"
+
+
 @dataclass
 class SeatEntry:
     """What ``session_enter`` gave back, kept to what the runtime needs."""
@@ -87,11 +99,25 @@ class SeatEntry:
         return hashlib.sha256(self.persona.strip().encode("utf-8")).hexdigest()
 
     def system_prompt(self, repo_prompt: str) -> str:
-        """The broker's persona leads, the packet brief follows, the repo's
-        CLAUDE.md comes last. Order is the point: the seat is who the broker
-        says it is, working the packet it was given, in the repo's house
-        style — not the other way round."""
+        """The broker's persona leads, the packet brief follows, an egress
+        notice (if any) comes next, the repo's CLAUDE.md comes last. Order is
+        the point: the seat is who the broker says it is, working the packet
+        it was given, told what it cannot reach off-box, in the repo's house
+        style — not the other way round.
+
+        An egress-scoped blocker never refused entry (see `enter`'s scope
+        split), so the seat would otherwise have no way to learn its network
+        is closed short of a tool actually failing mid-task."""
         parts = [p for p in (self.persona.strip(), self.assignment.strip()) if p]
+        egress = [b for b in self.blockers if _blocker_scope(b) == "egress"]
+        if egress:
+            summary = "; ".join(
+                str(b.get("summary") or b.get("id") or "?") for b in egress
+            )
+            parts.append(
+                f"Egress closed: {summary}. Local work and loopback tools "
+                "are unaffected."
+            )
         parts.append(repo_prompt)
         return "\n\n".join(parts)
 
@@ -193,16 +219,30 @@ def enter(
         lines = "; ".join(
             f"{b.get('id', '?')}: {b.get('summary', '')}" for b in blockers
         )
-        # A specialist with blockers cannot do its packet — refuse before a
-        # turn is spent. The human seat runs with blockers listed: the desk
-        # itself does (an expired lease is the usual one), and refusing it
-        # here would lock the operator out of their own chair. A seat that
-        # asked for no packet is on the human path whatever the broker's
-        # entry_mode says (see pending_offered above). Printed, kept on the
-        # entry, never silent.
-        if not human_path:
+        # A specialist with an ENTRY blocker cannot do its packet — refuse
+        # before a turn is spent. An EGRESS-scoped blocker (a dead lease,
+        # consent off) closes only what leaves the box; local work and
+        # loopback tools are unaffected, so it must never by itself refuse a
+        # specialist's wake (the Loki-wake defect this split exists to fix —
+        # a dead lease used to refuse entry for a seat that needed no
+        # network at all). A missing/unrecognized scope fails closed as
+        # "entry" (see `_blocker_scope`), so an older broker's blockers still
+        # refuse exactly as before this split existed.
+        #
+        # The human seat runs with blockers listed regardless of scope: the
+        # desk itself carries one routinely (an expired lease is the usual
+        # one), and refusing it here would lock the operator out of their own
+        # chair. A seat that asked for no packet is on the human path
+        # whatever the broker's entry_mode says (see pending_offered above).
+        # Printed, kept on the entry, never silent.
+        entry_blockers = [b for b in blockers if _blocker_scope(b) == "entry"]
+        if not human_path and entry_blockers:
+            entry_lines = "; ".join(
+                f"{b.get('id', '?')}: {b.get('summary', '')}" for b in entry_blockers
+            )
             raise SeatRefused(
-                f"session_enter for {app_id} carries {len(blockers)} blocker(s): {lines}"
+                f"session_enter for {app_id} carries {len(entry_blockers)} entry "
+                f"blocker(s): {entry_lines}"
             )
         print(
             f"  [seat] {app_id} enters with {len(blockers)} blocker(s): {lines}",

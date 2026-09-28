@@ -1346,6 +1346,23 @@ def main() -> None:
         parser.error(
             "--listen requires --mcp: the bus listener speaks to willow-mcp over stdio"
         )
+    # Same guard ratatosk-listen's daemon.main() enforces (daemon.py
+    # _require_willow_home, Loki 1317FF7D INFO: "crown.py --listen has no
+    # equivalent guard"): --listen spawns the same willow-mcp child over the
+    # same stdio transport, and an unset WILLOW_HOME here lets that child
+    # fall back to the tombstoned $HOME/.willow exactly the way the systemd
+    # unit did before daemon.py's guard existed — surfacing minutes later as
+    # no_egress_lease/manifest_unreadable, a network-shaped symptom of an
+    # environment problem. Checked before mcp_client.start() runs (below),
+    # so a refusal never leaves an orphaned child behind.
+    if args.listen and not os.environ.get("WILLOW_HOME", "").strip():
+        print(
+            "  [listen] refusing to start: WILLOW_HOME is unset or empty — "
+            "crown --listen must not fall back to a default home; set "
+            "WILLOW_HOME in the environment before running it",
+            flush=True,
+        )
+        raise SystemExit(1)
     # Same shape for the seat: the entry verb lives on the other end of the
     # stdio transport, so a seat without --mcp is a flag that cannot do what
     # it says.

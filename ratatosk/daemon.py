@@ -483,7 +483,33 @@ class SeatDaemon:
             on_status("stopped")
 
 
+def _require_willow_home() -> None:
+    """Fail loud, before anything is spawned, when ``WILLOW_HOME`` is unset
+    or empty.
+
+    ``mcp_client.start()`` (below) spawns willow-mcp as a child process; that
+    child resolves its own ``WILLOW_HOME`` and, unset here, falls back to
+    ``$HOME/.willow`` — a different (and on this box, tombstoned) home than
+    the one a systemd unit was written for. Left unchecked, that mismatch
+    surfaces minutes later as ``no_egress_lease``/``manifest_unreadable``
+    from a stale or unsigned manifest at the wrong path, which reads as a
+    network or signing problem rather than what it actually is: the wrong
+    environment. Measured: ``~/.config/systemd/user/ratatosk-listen-loki.service``
+    carried no ``Environment=WILLOW_HOME=`` line at all.
+    """
+    if os.environ.get("WILLOW_HOME", "").strip():
+        return
+    print(
+        "  [listen] refusing to start: WILLOW_HOME is unset or empty — "
+        "ratatosk-listen must not fall back to a default home; set "
+        "Environment=WILLOW_HOME=... in this seat's systemd unit",
+        flush=True,
+    )
+    raise SystemExit(1)
+
+
 def main(argv: list[str] | None = None) -> None:
+    _require_willow_home()
     parser = argparse.ArgumentParser(
         prog="ratatosk-listen",
         description="Run the Grove activation daemon for this seat (systemd-managed sibling of `ratatosk --mcp --listen`)",

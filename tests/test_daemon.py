@@ -1520,6 +1520,45 @@ def test_wake_with_no_dispatch_id_is_acknowledged_and_refused_not_worked():
     assert "session_enter" not in calls, "never entered the seat for an unworked wake"
 
 
+def test_main_refuses_without_willow_home(monkeypatch, capsys):
+    """Fail loud, before anything is spawned: an unset WILLOW_HOME must not
+    let ratatosk-listen silently fall back to a default home. Measured
+    defect: ~/.config/systemd/user/ratatosk-listen-loki.service carried no
+    Environment=WILLOW_HOME= line at all, and the willow-mcp child it spawns
+    then resolved the tombstoned $HOME/.willow — read as no_egress_lease /
+    manifest_unreadable, a network-shaped symptom of an environment
+    problem."""
+    monkeypatch.delenv("WILLOW_HOME", raising=False)
+    from ratatosk import daemon as _daemon_mod
+
+    connected = []
+    monkeypatch.setattr(
+        "ratatosk.mcp_client.start", lambda: connected.append(1) or ([], set())
+    )
+
+    with pytest.raises(SystemExit) as info:
+        _daemon_mod.main(["--app-id", "hanuman"])
+
+    assert info.value.code == 1
+    assert connected == [], "refused before mcp_client.start() was ever called"
+    out = capsys.readouterr().out
+    assert "WILLOW_HOME" in out
+    assert "refusing to start" in out
+
+
+def test_main_refuses_with_an_empty_willow_home(monkeypatch, capsys):
+    """Empty is not set — a blank Environment=WILLOW_HOME= in a unit file
+    must refuse exactly as an absent one does, not resolve as falsy-but-set."""
+    monkeypatch.setenv("WILLOW_HOME", "   ")
+    from ratatosk import daemon as _daemon_mod
+
+    with pytest.raises(SystemExit) as info:
+        _daemon_mod.main([])
+
+    assert info.value.code == 1
+    assert "WILLOW_HOME" in capsys.readouterr().out
+
+
 def test_main_wires_app_id_and_wake_flags(monkeypatch, capsys, tmp_path):
     """CLI: ``ratatosk-listen --app-id <seat>`` wires the crown activation;
     ``--wake-turns``/``--wake-seconds`` reach the SeatDaemon it builds."""
