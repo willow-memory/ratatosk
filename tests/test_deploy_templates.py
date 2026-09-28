@@ -17,6 +17,68 @@ TEMPLATE = (
     Path(__file__).parent.parent / "deploy" / "ratatosk-listen-loki.service.template"
 )
 
+DEPLOY_DIR = Path(__file__).parent.parent / "deploy"
+
+#: Explicit set, not a regex range — every systemd.exec(5) directive that
+#: implies (or IS) a user/mount namespace. On a system unit these are inert
+#: hardening; on a --user unit systemd.exec(5) on this box states each one
+#: "implicitly enables PrivateUsers=" (an unprivileged user namespace,
+#: requiring kernel.unprivileged_userns_clone=) — every file owner other
+#: than the invoking uid then reads back as the overflow uid (65534). That
+#: is exactly what crash-looped ratatosk-listen-loki.service (NRestarts
+#: 220): willow-mcp's trust-owner check saw constitutional/trust.env owned
+#: by uid 65534, not the trust owner's real uid, and correctly refused.
+NAMESPACE_IMPLYING_DIRECTIVES = frozenset(
+    {
+        "PrivateTmp",
+        "PrivateUsers",
+        "PrivateDevices",
+        "PrivateNetwork",
+        "PrivateMounts",
+        "ProtectSystem",
+        "ProtectHome",
+        "ProtectKernelTunables",
+        "ProtectKernelModules",
+        "ProtectKernelLogs",
+        "ProtectControlGroups",
+        "ProtectClock",
+        "ProtectHostname",
+        "RestrictNamespaces",
+        "ReadOnlyPaths",
+        "ReadWritePaths",
+        "InaccessiblePaths",
+        "TemporaryFileSystem",
+        "BindPaths",
+        "BindReadOnlyPaths",
+    }
+)
+
+
+def namespace_directives_present(text: str) -> list[str]:
+    """Offender list (empty means clean): any line assigning one of the
+    NAMESPACE_IMPLYING_DIRECTIVES keys, for a user-manager unit template.
+    Matched on the directive name up to '=', so a value doesn't matter —
+    the mere presence of the directive is what creates the namespace."""
+    offenders = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "=" not in stripped:
+            continue
+        name = stripped.split("=", 1)[0]
+        if name in NAMESPACE_IMPLYING_DIRECTIVES:
+            offenders.append(stripped)
+    return offenders
+
+
+def user_manager_service_templates() -> list[Path]:
+    """Every *.service.template this repo ships for the systemd --user
+    manager. All of ratatosk's shipped templates are user units today (each
+    is installed per-seat under a human operator's own systemd --user
+    instance, never as a system unit) — there is no is-this-a-user-unit
+    marker to key off, so this is every template under deploy/."""
+    return sorted(DEPLOY_DIR.glob("*.service.template"))
+
+
 _PLACEHOLDER_RE = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 
 
@@ -304,3 +366,88 @@ def test_template_declares_its_own_concrete_unit_name():
     text = TEMPLATE.read_text(encoding="utf-8")
     first_line = text.splitlines()[0]
     assert first_line == "# unit: ratatosk-listen-loki.service"
+
+
+def test_user_manager_templates_carry_no_namespace_implying_directive():
+    """The bug this test exists to prevent recurring: PrivateTmp=true (or
+    any sibling namespace-implying directive) in a systemd --user unit
+    implicitly creates an unprivileged user namespace (systemd.exec(5) on
+    this box, confirmed under the PrivateTmp=/PrivateDevices=/etc. entries:
+    "This option is only available for system services, or for services
+    running in per-user instances of the service manager in which case
+    PrivateUsers= is implicitly enabled (requires unprivileged user
+    namespaces support to be enabled in the kernel via the
+    'kernel.unprivileged_userns_clone=' sysctl)."). Inside that namespace
+    every file owner other than the invoking uid reads back as the overflow
+    uid 65534 — which is exactly why willow-mcp refused to start under
+    ratatosk-listen-loki.service ("trust.env is owned by uid 65534, not the
+    trust owner's uid"), the MCP handshake then timed out, and
+    Restart=on-failure crash-looped it (NRestarts 220)."""
+    offenders_by_file = {}
+    for template in user_manager_service_templates():
+        text = template.read_text(encoding="utf-8")
+        offenders = namespace_directives_present(text)
+        if offenders:
+            offenders_by_file[template.name] = offenders
+    assert offenders_by_file == {}
+
+
+def test_plant_privatetmp_in_the_loki_template_is_caught():
+    """Fires the scan on a text with PrivateTmp=true put back — proves it
+    would have caught the exact defect that crash-looped this unit."""
+    poisoned = TEMPLATE.read_text(encoding="utf-8").replace(
+        "NoNewPrivileges=true\n",
+        "NoNewPrivileges=true\nPrivateTmp=true\n",
+        1,
+    )
+    offenders = namespace_directives_present(poisoned)
+    assert offenders == ["PrivateTmp=true"]
+
+
+def missing_grove_channel_environment_line(text: str) -> list[str]:
+    """Offender list (empty means clean): the exact Environment= directive
+    setting RATATOSK_GROVE_CHANNEL=loki is absent from ``text``'s own
+    lines. Amendment to 1E7263B0: the vault env file's own line reads
+    ``export RATATOSK_GROVE_CHANNEL=loki``, which systemd's
+    EnvironmentFile= parser rejects outright ("Ignoring invalid
+    environment assignment") — the key is never actually set that way, so
+    ratatosk.grove.channel_env() reads back "" and grove.send() silently
+    no-ops with an ok=True "grove disabled" receipt. Matched as a whole
+    LINE, not a bare substring — the header comment above the directive
+    quotes this same text in prose, and a substring check would find that
+    mention even with the real directive removed."""
+    line = "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    return [] if line in text.splitlines() else [line]
+
+
+def test_template_sets_grove_channel_via_environment_directive():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert missing_grove_channel_environment_line(text) == []
+
+
+def test_grove_channel_environment_line_comes_after_environment_file():
+    """The directive must come after EnvironmentFile= so the unit sets the
+    value itself instead of relying on the (broken) env-file line."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    env_file_index = next(
+        i for i, line in enumerate(lines) if line.startswith("EnvironmentFile=")
+    )
+    channel_index = next(
+        i
+        for i, line in enumerate(lines)
+        if line == "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    )
+    assert channel_index > env_file_index
+
+
+def test_plant_missing_grove_channel_line_is_caught():
+    """Fires the scan on a text that lacks the line — proves it would have
+    caught the exact bug this amendment closes (the listener silently
+    never posting to Grove)."""
+    stripped = TEMPLATE.read_text(encoding="utf-8").replace(
+        "Environment=RATATOSK_GROVE_CHANNEL=loki\n", ""
+    )
+    assert missing_grove_channel_environment_line(stripped) == [
+        "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    ]

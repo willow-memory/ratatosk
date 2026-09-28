@@ -212,6 +212,22 @@ UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRI
 # because $WILLOW_HOME/env never defines it today (see the header comment
 # above); it does not need the env(1) treatment WILLOW_HOME/
 # WILLOW_STORE_ROOT get above.
+#
+# RATATOSK_GROVE_CHANNEL is set explicitly here, after EnvironmentFile=,
+# rather than trusted to arrive through $WILLOW_HOME/env: the vault env
+# file's own line reads `export RATATOSK_GROVE_CHANNEL=loki`, and
+# systemd's EnvironmentFile= parser does not accept an `export ` prefix —
+# it logs "Ignoring invalid environment assignment" for that line and the
+# key is never set. Measured effect: ratatosk.grove.channel_env() then
+# reads the unset variable back as "", and grove.send() quietly no-ops
+# with an ok=True "grove disabled (RATATOSK_GROVE_CHANNEL unset)" receipt
+# — the listener reports success on every send while never reaching
+# Grove. Because the env file's line is invalid and thus never actually
+# defines this key, there is no EnvironmentFile=-vs-Environment=
+# precedence fight here the way there is for WILLOW_HOME/WILLOW_STORE_ROOT
+# above (Loki 1317FF7D B2) — a plain Environment= directive after
+# EnvironmentFile= is sufficient and is not shadowed.
+Environment=RATATOSK_GROVE_CHANNEL=loki
 Environment=WILLOW_MCP_PYTHON=@PYTHON@
 ExecStart=/usr/bin/env WILLOW_HOME=@WILLOW_HOME@ WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@ @HOME@/github/willow-memory/ratatosk/.venv/bin/ratatosk-listen --app-id loki --wake-turns 8 --wake-seconds 600
 # SIGTERM reaches SeatDaemon.request_stop via the signal handler installed in
@@ -221,7 +237,21 @@ ExecStart=/usr/bin/env WILLOW_HOME=@WILLOW_HOME@ WILLOW_STORE_ROOT=@WILLOW_STORE
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
-PrivateTmp=true
+# NoNewPrivileges=true (above) does not create a namespace and is safe here.
+# PrivateTmp=true (and PrivateUsers=/PrivateDevices=/ProtectSystem=/
+# ProtectHome=/etc. — any namespace-implying directive) MUST NOT be added
+# to this unit: systemd.exec(5) on this box states, for services running
+# in per-user instances of the service manager, that such an option
+# "implicitly enables PrivateUsers=" (an unprivileged user namespace,
+# requiring kernel.unprivileged_userns_clone=). Inside that namespace only
+# the invoking uid maps to itself; every other file owner — including the
+# trust owner's real uid on constitutional/trust.env — reads back as the
+# overflow uid 65534. willow-mcp's trust-owner check then correctly
+# refuses to start ("trust.env is owned by uid 65534, not the trust
+# owner's uid"), the child times out its MCP init handshake, and
+# Restart=on-failure spins forever (measured: NRestarts 220). The trust
+# owner uid must stay visible to the broker, so this user unit stays out
+# of every namespace-creating sandboxing option.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ratatosk-listen-loki
