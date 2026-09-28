@@ -9,7 +9,9 @@ run_forever actually honors.
 """
 
 import json
+import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -566,7 +568,9 @@ def test_run_wake_happy_path_enters_runs_closes_and_inks_a_receipt_line(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -615,7 +619,9 @@ def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -630,13 +636,16 @@ def test_run_wake_refuses_on_the_turn_budget(tmp_path, monkeypatch):
     )
 
     assert "outcome=budget_turns" in line
-    assert mcp.named("handoff_write_v4"), "still closes on a budget refusal"
-    # F7: the closeout's own narrative/findings must say how it ended, not
-    # just the returned receipt line — checked at the seat.py level in
-    # test_seat.py; here just confirm the transcript carries the notice
-    # summarize() reads.
-    (close,) = mcp.named("handoff_write_v4")
-    assert "turn cap" in close["narrative"]
+    # Ruling Q3 (dispatch 1AD03A64): a budget refusal leaves the packet
+    # 'working' -- handoff_write_v4 is NOT called; the note lives in the
+    # wake's own receipt line instead (posted back to the reply channel by
+    # BusListener.process_message).
+    assert not mcp.named("handoff_write_v4"), "budget refusal must not force a close"
+    assert "handoff=left_working" in line
+    # The transcript itself still carries the budget notice (_run_turn_bounded
+    # writes it via write_system before this ever runs) -- checked directly
+    # rather than through a handoff narrative that no longer exists.
+    assert "turn cap" in _transcript_notices(tmp_path)
 
 
 def test_run_wake_refuses_on_the_wall_clock_budget_between_calls(tmp_path, monkeypatch):
@@ -649,7 +658,9 @@ def test_run_wake_refuses_on_the_wall_clock_budget_between_calls(tmp_path, monke
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -664,7 +675,9 @@ def test_run_wake_refuses_on_the_wall_clock_budget_between_calls(tmp_path, monke
     )
 
     assert "outcome=budget_seconds" in line
-    assert mcp.named("handoff_write_v4")
+    # Ruling Q3 (dispatch 1AD03A64): left working, not closed.
+    assert not mcp.named("handoff_write_v4")
+    assert "handoff=left_working" in line
 
 
 def test_run_wake_reports_the_wall_clock_budget_even_when_one_call_overruns_it(
@@ -687,7 +700,9 @@ def test_run_wake_reports_the_wall_clock_budget_even_when_one_call_overruns_it(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -711,6 +726,8 @@ def test_run_wake_reports_the_wall_clock_budget_even_when_one_call_overruns_it(
     )
     assert "outcome=budget_seconds" in line, "the overrun is reported, not silently ok"
     assert "outcome=ok" not in line
+    # Ruling Q3 (dispatch 1AD03A64): left working, not closed.
+    assert not mcp.named("handoff_write_v4")
 
 
 def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
@@ -719,7 +736,9 @@ def test_run_wake_unknown_role_falls_back_to_chat_class(tmp_path, monkeypatch):
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "some-unmapped-role"}},
+            "dispatch_read": {
+                "meta": {"role": "some-unmapped-role", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -760,7 +779,9 @@ def test_run_wake_fires_a_heartbeat_during_a_multi_turn_wake_not_only_after(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -811,7 +832,9 @@ def test_wake_tool_confirm_verdict_is_refused_not_prompted_on_stdin(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -855,7 +878,9 @@ def test_wake_exception_after_entry_still_closes_and_never_raises(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -882,7 +907,9 @@ def _confirm_loop_mcp(
     return _FakeMCP(
         {
             "session_enter": _entered(role=role, assignment=assignment),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -898,6 +925,29 @@ def _tool_use_inference(name: str, tool_input: dict):
         latency_ms=1,
     )
     return _fake_inference(lambda *a, **k: (calling, _receipt_ok()))
+
+
+def _transcript_notices(tmp_path) -> str:
+    """Every system-note line written to the seat's own JSONL transcript,
+    joined -- the Q3 (dispatch 1AD03A64) replacement for `_notice_text`
+    when the wake never reaches handoff_write_v4 (a budget cap): the
+    refusal reason still landed via `state.writer.write_system`, just not
+    in a closeout finding that no longer gets written."""
+    import json as _json
+
+    session_dir = Path(os.environ["RATATOSK_SESSION_DIR"])
+    files = list(session_dir.glob("*.jsonl"))
+    assert files, "a transcript was written"
+    notices = []
+    for line in files[0].read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        entry = _json.loads(line)
+        if entry.get("type") == "system":
+            content = entry.get("message", {}).get("content")
+            if isinstance(content, str):
+                notices.append(content)
+    return " | ".join(notices)
 
 
 def _notice_text(close: dict) -> str:
@@ -932,8 +982,10 @@ def test_run_wake_bash_is_refused_for_every_role(tmp_path, monkeypatch):
             max_turns=1,
         )
         assert "outcome=budget_turns" in line, role
-        (close,) = mcp.named("handoff_write_v4")
-        assert "not in this seat's wake-policy allow set" in _notice_text(close), role
+        assert not mcp.named("handoff_write_v4"), role
+        assert "not in this seat's wake-policy allow set" in _transcript_notices(
+            tmp_path
+        ), role
 
 
 def test_run_wake_auditor_role_write_is_refused_by_policy(tmp_path, monkeypatch):
@@ -951,9 +1003,10 @@ def test_run_wake_auditor_role_write_is_refused_by_policy(tmp_path, monkeypatch)
     )
 
     assert "outcome=budget_turns" in line
-    (close,) = mcp.named("handoff_write_v4")
-    assert "not in this seat's wake-policy allow set (role='auditor')" in _notice_text(
-        close
+    assert not mcp.named("handoff_write_v4")
+    assert (
+        "not in this seat's wake-policy allow set (role='auditor')"
+        in _transcript_notices(tmp_path)
     )
 
 
@@ -1014,8 +1067,8 @@ def test_run_wake_build_role_write_outside_the_worktree_is_refused(
     )
 
     assert not outside.exists(), "never actually written — refused before dispatch"
-    (close,) = mcp.named("handoff_write_v4")
-    assert "is outside the packet worktree" in _notice_text(close)
+    assert not mcp.named("handoff_write_v4")
+    assert "is outside the packet worktree" in _transcript_notices(tmp_path)
     assert "outcome=budget_turns" in line
 
 
@@ -1038,8 +1091,8 @@ def test_run_wake_build_role_write_with_no_worktree_named_is_refused(
     )
 
     assert not target.exists()
-    (close,) = mcp.named("handoff_write_v4")
-    assert "no packet worktree could be named" in _notice_text(close)
+    assert not mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" in _transcript_notices(tmp_path)
     assert "outcome=budget_turns" in line
 
 
@@ -1069,8 +1122,8 @@ def test_run_wake_build_role_write_scope_rejects_dotdot_escape(tmp_path, monkeyp
     assert not target.exists(), (
         "the dotdot-widened scope must not have admitted this write"
     )
-    (close,) = mcp.named("handoff_write_v4")
-    assert "no packet worktree could be named" in _notice_text(close)
+    assert not mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" in _transcript_notices(tmp_path)
     assert "outcome=budget_turns" in line
 
 
@@ -1136,8 +1189,8 @@ def test_run_wake_build_role_write_inside_a_windows_shaped_worktree_is_named(
         inference=inference,
         max_turns=1,
     )
-    (close,) = mcp.named("handoff_write_v4")
-    assert "no packet worktree could be named" not in _notice_text(close)
+    assert not mcp.named("handoff_write_v4")
+    assert "no packet worktree could be named" not in _transcript_notices(tmp_path)
     assert "outcome=budget_turns" in line
 
 
@@ -1172,8 +1225,8 @@ def test_run_wake_gated_tool_ignores_a_loosened_interactive_policy(
     )
 
     assert not target.exists(), "the wake policy must still refuse Write for auditor"
-    (close,) = mcp.named("handoff_write_v4")
-    assert "not in this seat's wake-policy allow set" in _notice_text(close)
+    assert not mcp.named("handoff_write_v4")
+    assert "not in this seat's wake-policy allow set" in _transcript_notices(tmp_path)
     assert "outcome=budget_turns" in line
 
 
@@ -1192,7 +1245,9 @@ def test_run_wake_refuses_an_unregistered_seat_even_with_a_matching_role(
     mcp = _FakeMCP(
         {
             "session_enter": _entered(role="auditor", persona_file=""),
-            "dispatch_read": {"meta": {"role": "build-work-order"}},
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
             "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
         }
     )
@@ -1624,3 +1679,119 @@ def test_main_refuses_app_id_willow_before_connecting(monkeypatch, tmp_path):
         _daemon_mod.main(["--app-id", "willow"])
     assert info.value.code == 2
     assert connected == [], "refused before the transport was ever started"
+
+
+# -- N1/N6/Q3 proof (dispatch 1AD03A64) -------------------------------------
+
+
+def test_run_wake_passes_runner_ratatosk_to_session_enter(tmp_path, monkeypatch):
+    """N1: the WAKE-activated path always identifies itself as the
+    'ratatosk' runner on session_enter -- the broker's own ERUNNER guard
+    (willow-mcp dispatch.py) is what actually refuses a mismatched packet;
+    this proves run_wake asks with the right identity in the first place."""
+    _isolate(monkeypatch, tmp_path)
+    inference = _fake_inference(lambda *a, **k: (_done(), _receipt_ok()))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+    crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+    )
+    (enter,) = mcp.named("session_enter")
+    assert enter["runner"] == "ratatosk"
+
+
+def test_run_wake_stops_immediately_on_erunner_no_model_call(tmp_path, monkeypatch):
+    """N1/N6: the broker refuses ERUNNER (a packet dispatched for a seat,
+    not this autonomous runner) -- no turn loop, no model call, and the
+    wake receipt says so by name."""
+    _isolate(monkeypatch, tmp_path)
+
+    def _never_called(*_a, **_kw):
+        raise AssertionError("no model call on an ERUNNER refusal")
+
+    inference = _fake_inference(_never_called)
+    mcp = _FakeMCP(
+        {
+            "session_enter": {
+                "error": "ERUNNER",
+                "message": "packet 'PKT00001' is runner='seat'; caller passed runner='ratatosk'",
+            },
+        }
+    )
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+    )
+    assert "entry refused" in line
+    assert "ERUNNER" in line
+    assert not mcp.named("handoff_write_v4")
+
+
+def test_run_wake_stops_immediately_on_held_by_other_session_no_model_call(
+    tmp_path, monkeypatch
+):
+    """N6 (Loki 10A39E21 N6): a re-entry into a packet another session
+    already accepted is a SUCCESSFUL session_enter response carrying
+    held_by_other_session=True, not an error -- seat.enter() must still
+    refuse to start a turn loop on it."""
+    _isolate(monkeypatch, tmp_path)
+
+    def _never_called(*_a, **_kw):
+        raise AssertionError("no model call when held_by_other_session")
+
+    inference = _fake_inference(_never_called)
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(held_by_other_session=True),
+        }
+    )
+    line = crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+    )
+    assert "entry refused" in line
+    assert "held_by_other_session" in line
+    assert not mcp.named("handoff_write_v4")
+
+
+def test_run_wake_budget_exhaustion_never_calls_handoff_write_v4(tmp_path, monkeypatch):
+    """Q3, isolated proof: independent of the specific wording in the other
+    budget tests above, the one invariant that must hold is that a budget
+    outcome never reaches handoff_write_v4."""
+    _isolate(monkeypatch, tmp_path)
+    inference = _fake_inference(lambda *a, **k: (_done(), _receipt_ok()))
+    mcp = _FakeMCP(
+        {
+            "session_enter": _entered(),
+            "dispatch_read": {
+                "meta": {"role": "build-work-order", "runner": "ratatosk"}
+            },
+            "handoff_write_v4": _BROKER_HANDOFF_ANSWER,
+        }
+    )
+    crown.run_wake(
+        mcp,
+        app_id="hanuman",
+        dispatch_id="PKT00001",
+        trace_id="t",
+        inference=inference,
+        wall_clock_seconds=-1,
+    )
+    assert mcp.named("handoff_write_v4") == []

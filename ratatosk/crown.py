@@ -1016,6 +1016,12 @@ def run_wake(
     except _seat.SeatRefused as exc:
         return f"[ratatosk] wake trace={trace_id} refused: {exc}"
 
+    # N1 (dispatch 1AD03A64): listener opt-in. `runner="ratatosk"` on the
+    # session_enter call below is the actual enforcement point -- the
+    # broker refuses ERUNNER (surfaced as a SeatRefused, same as any other
+    # entry error) when the packet's own runner does not match, with no
+    # bind and no status change. No turn loop starts on that path -- see
+    # the except clause immediately below.
     writer = _session.SessionWriter(cwd=cwd or str(Path.cwd()))
     try:
         entry = _seat.enter(
@@ -1025,6 +1031,7 @@ def run_wake(
             dispatch_id=dispatch_id,
             project=os.environ.get("WILLOW_HANDOFF_PROJECT", ""),
             workspace=writer.cwd,
+            runner="ratatosk",
         )
     except _seat.SeatRefused as exc:
         return f"[ratatosk] wake trace={trace_id} entry refused: {exc}"
@@ -1127,9 +1134,34 @@ def run_wake(
         with contextlib.suppress(Exception):
             on_heartbeat()
 
-    result = _seat.close(mcp_call, entry, writer.read_entries(), str(writer.path))
-    closed = _seat.closed_receipt(entry, result)
-    print(f"  {_seat.ink(writer, closed)}", flush=True)
+    # Ruling Q3 (dispatch 1AD03A64): a budget refusal is not a completion
+    # crown can honestly back -- handoff_write_v4 would still flip the
+    # packet to 'complete' (checklist_resolved=False), stranding a real
+    # verdict on a packet that simply ran out of turns or wall-clock time.
+    # Leave it 'working' instead. BusListener.process_message already posts
+    # whatever this function returns to the WAKE's reply channel, so the
+    # note in the final receipt line below IS the note to the desk -- no
+    # separate Grove call is needed.
+    if outcome in ("budget_turns", "budget_seconds"):
+        closed = {
+            "left_working": True,
+            "reason": outcome,
+            "app_id": entry.app_id,
+            "session_id": entry.session_id,
+            "dispatch_id": entry.dispatch_id,
+        }
+        note = (
+            f"[ratatosk] seat left packet working app={entry.app_id} "
+            f"dispatch={entry.dispatch_id} reason={outcome} -- budget "
+            f"exhausted, not closed (ruling Q3)"
+        )
+        print(f"  {note}", flush=True)
+        with contextlib.suppress(Exception):
+            writer.write_receipt(closed)
+    else:
+        result = _seat.close(mcp_call, entry, writer.read_entries(), str(writer.path))
+        closed = _seat.closed_receipt(entry, result)
+        print(f"  {_seat.ink(writer, closed)}", flush=True)
 
     # A woken seat gets the same end-of-session bookkeeping a REPL session
     # does, when there was a RuntimeState to take it from (Loki 3564BE3C F8):
@@ -1157,7 +1189,11 @@ def run_wake(
     # closed_receipt names whatever the broker actually returned (dispatch_id
     # status/handoff_id/path/continuity_key fallback chain, seat.py) — never
     # the literal string "ok" standing in for a real answer (Loki 3564BE3C F1).
-    handoff_named = closed.get("handoff_id") or closed.get("error") or "unknown"
+    handoff_named = (
+        closed.get("handoff_id")
+        or closed.get("error")
+        or ("left_working" if closed.get("left_working") else "unknown")
+    )
     rungs = ", ".join(f"{w} x{n}" for w, n in summary["rungs"].items()) or "none"
     return (
         f"[ratatosk] wake receipt trace={trace_id} dispatch={dispatch_id} "

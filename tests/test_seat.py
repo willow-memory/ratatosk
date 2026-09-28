@@ -117,6 +117,7 @@ def test_enter_calls_session_enter_once_with_the_seat_args():
         {
             "app_id": "hanuman",
             "session_id": "s-1",
+            "runner": "seat",
             "dispatch_id": "PKT00001",
             "project": "willows-grove",
             "workspace": "/tmp/w",
@@ -139,7 +140,9 @@ def test_enter_never_calls_dispatch_accept():
 def test_enter_omits_optional_args_it_was_not_given():
     mcp = FakeMCP({"session_enter": _entered(entry_mode="human", dispatch_id=None)})
     _seat.enter(mcp, app_id="ada", session_id="s-2")
-    assert mcp.named("session_enter") == [{"app_id": "ada", "session_id": "s-2"}]
+    assert mcp.named("session_enter") == [
+        {"app_id": "ada", "session_id": "s-2", "runner": "seat"}
+    ]
 
 
 # -- wake policy resolution (sealed 3566adb5) -------------------------------
