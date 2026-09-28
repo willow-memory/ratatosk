@@ -221,7 +221,21 @@ ExecStart=/usr/bin/env WILLOW_HOME=@WILLOW_HOME@ WILLOW_STORE_ROOT=@WILLOW_STORE
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
-PrivateTmp=true
+# NoNewPrivileges=true (above) does not create a namespace and is safe here.
+# PrivateTmp=true (and PrivateUsers=/PrivateDevices=/ProtectSystem=/
+# ProtectHome=/etc. — any namespace-implying directive) MUST NOT be added
+# to this unit: systemd.exec(5) on this box states, for services running
+# in per-user instances of the service manager, that such an option
+# "implicitly enables PrivateUsers=" (an unprivileged user namespace,
+# requiring kernel.unprivileged_userns_clone=). Inside that namespace only
+# the invoking uid maps to itself; every other file owner — including the
+# trust owner's real uid on constitutional/trust.env — reads back as the
+# overflow uid 65534. willow-mcp's trust-owner check then correctly
+# refuses to start ("trust.env is owned by uid 65534, not the trust
+# owner's uid"), the child times out its MCP init handshake, and
+# Restart=on-failure spins forever (measured: NRestarts 220). The trust
+# owner uid must stay visible to the broker, so this user unit stays out
+# of every namespace-creating sandboxing option.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ratatosk-listen-loki
