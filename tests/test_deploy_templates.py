@@ -402,3 +402,52 @@ def test_plant_privatetmp_in_the_loki_template_is_caught():
     )
     offenders = namespace_directives_present(poisoned)
     assert offenders == ["PrivateTmp=true"]
+
+
+def missing_grove_channel_environment_line(text: str) -> list[str]:
+    """Offender list (empty means clean): the exact Environment= directive
+    setting RATATOSK_GROVE_CHANNEL=loki is absent from ``text``'s own
+    lines. Amendment to 1E7263B0: the vault env file's own line reads
+    ``export RATATOSK_GROVE_CHANNEL=loki``, which systemd's
+    EnvironmentFile= parser rejects outright ("Ignoring invalid
+    environment assignment") — the key is never actually set that way, so
+    ratatosk.grove.channel_env() reads back "" and grove.send() silently
+    no-ops with an ok=True "grove disabled" receipt. Matched as a whole
+    LINE, not a bare substring — the header comment above the directive
+    quotes this same text in prose, and a substring check would find that
+    mention even with the real directive removed."""
+    line = "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    return [] if line in text.splitlines() else [line]
+
+
+def test_template_sets_grove_channel_via_environment_directive():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert missing_grove_channel_environment_line(text) == []
+
+
+def test_grove_channel_environment_line_comes_after_environment_file():
+    """The directive must come after EnvironmentFile= so the unit sets the
+    value itself instead of relying on the (broken) env-file line."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    env_file_index = next(
+        i for i, line in enumerate(lines) if line.startswith("EnvironmentFile=")
+    )
+    channel_index = next(
+        i
+        for i, line in enumerate(lines)
+        if line == "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    )
+    assert channel_index > env_file_index
+
+
+def test_plant_missing_grove_channel_line_is_caught():
+    """Fires the scan on a text that lacks the line — proves it would have
+    caught the exact bug this amendment closes (the listener silently
+    never posting to Grove)."""
+    stripped = TEMPLATE.read_text(encoding="utf-8").replace(
+        "Environment=RATATOSK_GROVE_CHANNEL=loki\n", ""
+    )
+    assert missing_grove_channel_environment_line(stripped) == [
+        "Environment=RATATOSK_GROVE_CHANNEL=loki"
+    ]
