@@ -50,17 +50,56 @@ def unresolved_placeholders_after_render(
     return sorted(set(_PLACEHOLDER_RE.findall(rendered)))
 
 
-def missing_explicit_env_line(text: str, name: str, placeholder: str) -> list[str]:
-    """Offender list (empty means clean): the exact Environment= DIRECTIVE
-    line setting ``name`` from ``@placeholder@`` is absent from ``text``'s
-    own lines. Same shape as ``missing_willow_mcp_python_line`` above,
-    generalized: an env-file key this daemon and its spawned willow-mcp
-    child both need must never depend on the env FILE happening to define
-    it — env-unit.install-amend-5A1FEB52 (the WILLOW_HOME defect: the file's
-    own EnvironmentFile= line only uses WILLOW_HOME to locate the file, not
-    to guarantee the file defines it)."""
-    line = f"Environment={name}=@{placeholder}@"
-    return [] if line in text.splitlines() else [line]
+def exec_start_line(text: str) -> str:
+    """The one ``ExecStart=`` line, or ``""`` if the template has none."""
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            return line
+    return ""
+
+
+def missing_execstart_env_pin(text: str, name: str, placeholder: str) -> list[str]:
+    """Offender list (empty means clean): ``ExecStart=`` does not pin ``name``
+    via ``env(1)`` from ``@placeholder@`` as one of its leading assignments.
+
+    Loki 1317FF7D B2: a plain ``Environment=NAME=@PLACEHOLDER@`` directive
+    does NOT win over a same-named key in ``$WILLOW_HOME/env`` — systemd
+    gives ``EnvironmentFile=`` precedence over ``Environment=`` regardless of
+    line order. ``env(1)`` run as the ExecStart command itself is the one
+    place a pin genuinely cannot be shadowed by the env file: it runs AFTER
+    systemd has already assembled the environment from
+    ``EnvironmentFile=``/``Environment=``/``UnsetEnvironment=``, and its own
+    assignments override whatever it inherits before it execs the real
+    command in turn."""
+    token = f"{name}=@{placeholder}@"
+    line = exec_start_line(text)
+    if not line.startswith("ExecStart=/usr/bin/env "):
+        return [f"ExecStart= does not run via /usr/bin/env: {line!r}"]
+    assignments = line[len("ExecStart=/usr/bin/env ") :].split()
+    return [] if token in assignments else [token]
+
+
+_WILLOW_HOME_ASSIGNMENT_RE = re.compile(r"WILLOW_HOME=(\S+)")
+
+
+def hardcoded_home_lines(text: str) -> list[str]:
+    """Offender list: any non-comment, non-blank line assigning
+    ``WILLOW_HOME=`` to anything other than the exact placeholder token
+    ``@WILLOW_HOME@`` — a hardcoded absolute path baked in instead of the
+    placeholder (Loki 1317FF7D M-R7), whether it is its own
+    ``Environment=WILLOW_HOME=...`` directive (a second, literal assignment
+    appended after the legitimate placeholder line) or an ``env(1)``
+    assignment embedded inside ``ExecStart=``."""
+    offenders = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for match in _WILLOW_HOME_ASSIGNMENT_RE.finditer(stripped):
+            if match.group(1) != "@WILLOW_HOME@":
+                offenders.append(line)
+                break
+    return offenders
 
 
 def unset_environment_names(text: str) -> set[str]:
@@ -79,7 +118,8 @@ def named_in_unset_environment(text: str, name: str) -> list[str]:
     return [
         line
         for line in text.splitlines()
-        if line.startswith("UnsetEnvironment=") and name in line.split("=", 1)[1].split()
+        if line.startswith("UnsetEnvironment=")
+        and name in line.split("=", 1)[1].split()
     ]
 
 
@@ -132,43 +172,60 @@ def test_plant_unset_environment_naming_willow_mcp_python_is_caught():
     assert offenders and "WILLOW_MCP_PYTHON" in offenders[0]
 
 
-def test_template_sets_willow_home_explicitly_from_the_willow_home_placeholder():
-    """An egress lease is not an entry gate (fix/lease-is-not-an-entry-blocker
-    / fix/refuse-only-entry-blockers), but this defect is upstream of that
-    split entirely: a listener with no explicit `Environment=WILLOW_HOME=`
-    line let its own WILLOW_HOME (and the willow-mcp child's) fall back to
+def test_template_pins_willow_home_via_execstart_env():
+    """Loki 1317FF7D B2: a plain `Environment=WILLOW_HOME=` directive does
+    NOT win over a same-named key in $WILLOW_HOME/env (systemd gives
+    EnvironmentFile= precedence over Environment=, whatever the line
+    order) — so the pin has to live in ExecStart itself, via env(1), which
+    runs after systemd has already assembled the environment. Upstream
+    defect this exists to close (fix/lease-is-not-an-entry-blocker /
+    fix/refuse-only-entry-blockers): a listener with no real WILLOW_HOME pin
+    let its own WILLOW_HOME (and the willow-mcp child's) fall back to
     whatever `ratatosk.paths` and the spawned broker default to when unset —
     read as `no_egress_lease`/`manifest_unreadable` from a stale home, which
     looked like a network problem and was actually an environment one."""
     text = TEMPLATE.read_text(encoding="utf-8")
-    assert missing_explicit_env_line(text, "WILLOW_HOME", "WILLOW_HOME") == []
+    assert missing_execstart_env_pin(text, "WILLOW_HOME", "WILLOW_HOME") == []
     rendered = render(text, _FILL)
-    assert "Environment=WILLOW_HOME=/home/op/.willow" in rendered
+    assert "ExecStart=/usr/bin/env WILLOW_HOME=/home/op/.willow " in rendered
 
 
-def test_plant_missing_willow_home_line_is_caught():
+def test_plant_missing_willow_home_execstart_pin_is_caught():
     stripped = TEMPLATE.read_text(encoding="utf-8").replace(
-        "Environment=WILLOW_HOME=@WILLOW_HOME@\n", ""
+        "ExecStart=/usr/bin/env WILLOW_HOME=@WILLOW_HOME@ WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@ ",
+        "ExecStart=/usr/bin/env WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@ ",
     )
-    assert missing_explicit_env_line(stripped, "WILLOW_HOME", "WILLOW_HOME") == [
-        "Environment=WILLOW_HOME=@WILLOW_HOME@"
+    assert missing_execstart_env_pin(stripped, "WILLOW_HOME", "WILLOW_HOME") == [
+        "WILLOW_HOME=@WILLOW_HOME@"
     ]
 
 
-def test_template_sets_willow_store_root_explicitly():
+def test_template_pins_willow_store_root_via_execstart_env():
     text = TEMPLATE.read_text(encoding="utf-8")
-    assert missing_explicit_env_line(text, "WILLOW_STORE_ROOT", "WILLOW_STORE_ROOT") == []
-    rendered = render(text, _FILL)
-    assert "Environment=WILLOW_STORE_ROOT=/home/op/.willow/store" in rendered
-
-
-def test_plant_missing_willow_store_root_line_is_caught():
-    stripped = TEMPLATE.read_text(encoding="utf-8").replace(
-        "Environment=WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@\n", ""
+    assert (
+        missing_execstart_env_pin(text, "WILLOW_STORE_ROOT", "WILLOW_STORE_ROOT") == []
     )
-    assert missing_explicit_env_line(
+    rendered = render(text, _FILL)
+    assert "WILLOW_STORE_ROOT=/home/op/.willow/store" in rendered
+
+
+def test_plant_missing_willow_store_root_execstart_pin_is_caught():
+    stripped = TEMPLATE.read_text(encoding="utf-8").replace(
+        " WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@ @HOME@",
+        " @HOME@",
+    )
+    assert missing_execstart_env_pin(
         stripped, "WILLOW_STORE_ROOT", "WILLOW_STORE_ROOT"
-    ) == ["Environment=WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@"]
+    ) == ["WILLOW_STORE_ROOT=@WILLOW_STORE_ROOT@"]
+
+
+def test_execstart_does_not_run_via_a_plain_environment_directive():
+    """The whole point of the env(1) pin is that it is NOT a plain
+    Environment= directive (those lose to EnvironmentFile=) — pin the shape
+    of the fix, not just the presence of the two keys."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    line = exec_start_line(text)
+    assert line.startswith("ExecStart=/usr/bin/env WILLOW_HOME=@WILLOW_HOME@ ")
 
 
 def test_willow_store_root_is_not_also_named_in_unset_environment():
@@ -186,6 +243,40 @@ def test_plant_unset_environment_naming_willow_store_root_is_caught():
     )
     offenders = named_in_unset_environment(poisoned, "WILLOW_STORE_ROOT")
     assert offenders and "WILLOW_STORE_ROOT" in offenders[0]
+
+
+def test_template_has_no_hardcoded_home_path():
+    """Loki 1317FF7D M-R7 (LOW test gap, 13 passed before this test existed):
+    the only legitimate WILLOW_HOME= token anywhere in the template is the
+    placeholder itself. A hardcoded absolute path — including a SECOND
+    WILLOW_HOME= assignment appended after the real placeholder line/token —
+    must be caught."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert hardcoded_home_lines(text) == []
+
+
+def test_plant_a_hardcoded_home_line_is_caught():
+    """Fires the scan on the exact M-R7 mutation shape: a literal
+    Environment=WILLOW_HOME=/home/... line appended after the placeholder
+    token, instead of relying on @WILLOW_HOME@."""
+    poisoned = (
+        TEMPLATE.read_text(encoding="utf-8")
+        + "\nEnvironment=WILLOW_HOME=/home/sean-campbell/.willow\n"
+    )
+    offenders = hardcoded_home_lines(poisoned)
+    assert offenders and "/home/sean-campbell/.willow" in offenders[0]
+
+
+def test_plant_a_hardcoded_home_token_inside_execstart_is_caught():
+    """The same mutation shape, but baked into ExecStart's env(1) call
+    instead of a standalone Environment= line — hardcoded_home_lines must
+    catch it there too, not only at line-start."""
+    poisoned = TEMPLATE.read_text(encoding="utf-8").replace(
+        "WILLOW_HOME=@WILLOW_HOME@",
+        "WILLOW_HOME=/home/sean-campbell/.willow",
+    )
+    offenders = hardcoded_home_lines(poisoned)
+    assert offenders and "/home/sean-campbell/.willow" in offenders[0]
 
 
 def test_template_has_no_unresolved_placeholders_once_the_fillable_set_is_given():

@@ -365,9 +365,7 @@ def test_an_entry_scoped_blocker_still_refuses():
     entered = _entered(
         blockers={
             "count": 1,
-            "items": [
-                {"id": "manifest_unreadable", "summary": "x", "scope": "entry"}
-            ],
+            "items": [{"id": "manifest_unreadable", "summary": "x", "scope": "entry"}],
         }
     )
     with pytest.raises(_seat.SeatRefused) as info:
@@ -410,6 +408,31 @@ def test_a_blocker_with_an_unrecognized_scope_fails_closed_and_refuses():
             session_id="s-1",
             dispatch_id="PKT00001",
         )
+
+
+@pytest.mark.parametrize(
+    "scope", ["Egress", "EGRESS", " egress", "egress ", "egress\n"]
+)
+def test_a_case_or_whitespace_variant_scope_fails_closed_to_entry(scope):
+    """Only the exact string ``"egress"`` earns the pass-through (Loki
+    1317FF7D M-R4, LOW test gap: no test pinned this before). Normalizing
+    the scope — case-folding or stripping before the comparison — would
+    make a specialist with a malformed-but-egress-shaped blocker enter when
+    it should refuse, exactly the defect the scope split exists to avoid."""
+    entered = _entered(
+        blockers={
+            "count": 1,
+            "items": [{"id": "no_egress_lease", "summary": "x", "scope": scope}],
+        }
+    )
+    with pytest.raises(_seat.SeatRefused) as info:
+        _seat.enter(
+            FakeMCP({"session_enter": entered}),
+            app_id="hanuman",
+            session_id="s-1",
+            dispatch_id="PKT00001",
+        )
+    assert "1 entry blocker" in str(info.value)
 
 
 def test_mixed_blockers_refuse_naming_only_the_entry_ones():

@@ -57,6 +57,41 @@ def test_listen_without_mcp_is_refused_rather_than_becoming_a_repl(monkeypatch, 
     assert "--listen requires --mcp" in capsys.readouterr().err
 
 
+def test_listen_refuses_without_willow_home(monkeypatch, capsys):
+    """Same guard ratatosk-listen's daemon.main() enforces (Loki 1317FF7D
+    INFO): crown --listen must not silently fall back to a default home
+    either — it spawns the same willow-mcp child over the same stdio
+    transport."""
+    monkeypatch.delenv("WILLOW_HOME", raising=False)
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
+    monkeypatch.setattr("sys.argv", ["ratatosk", "--mcp", "--listen"])
+    started: list[int] = []
+    monkeypatch.setattr(mcp_client, "start", lambda: started.append(1) or ([], set()))
+
+    with pytest.raises(SystemExit) as exit_info:
+        crown.main()
+
+    assert exit_info.value.code == 1
+    assert started == [], "refused before mcp_client.start() was ever called"
+    out = capsys.readouterr().out
+    assert "WILLOW_HOME" in out
+    assert "refusing to start" in out
+
+
+def test_listen_refuses_with_an_empty_willow_home(monkeypatch, capsys):
+    """Empty is not set — a blank WILLOW_HOME must refuse exactly as an
+    absent one does, not resolve as falsy-but-set."""
+    monkeypatch.setenv("WILLOW_HOME", "   ")
+    monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
+    monkeypatch.setattr("sys.argv", ["ratatosk", "--mcp", "--listen"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        crown.main()
+
+    assert exit_info.value.code == 1
+    assert "WILLOW_HOME" in capsys.readouterr().out
+
+
 def test_ctrl_c_still_tears_the_server_down(fake_mcp, monkeypatch, capsys):
     monkeypatch.setenv("RATATOSK_GROVE_CHANNEL", "fleet")
 
