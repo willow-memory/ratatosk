@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.2](https://github.com/willow-memory/ratatosk/compare/v1.11.1...v1.11.2) (2026-09-28)
+
+
+### Fixed
+
+* pin the loki listener's WILLOW_HOME/WILLOW_STORE_ROOT via ExecStart env(1), guard crown --listen, pin M-R4 scope matching ([9dfc594](https://github.com/willow-memory/ratatosk/commit/9dfc594651d5b7177f86cb84fedc80db5f61fc26))
+* ratatosk-listen refuses to start without WILLOW_HOME ([d225d81](https://github.com/willow-memory/ratatosk/commit/d225d817fe017f7c9f14ed0759325abd044bdf67))
+* refuse a specialist's entry only on entry-scoped blockers ([59115cd](https://github.com/willow-memory/ratatosk/commit/59115cd0bc505267bbaea7e4f1f363e8fa74bdca))
+* seats refuse only entry blockers; listener pins WILLOW_HOME ([#58](https://github.com/willow-memory/ratatosk/issues/58)) ([631fa61](https://github.com/willow-memory/ratatosk/commit/631fa61205bf623c01fafd02f2e40c2df6d40b18))
+* the loki listener unit sets WILLOW_HOME and WILLOW_STORE_ROOT explicitly ([6320a3d](https://github.com/willow-memory/ratatosk/commit/6320a3da422793c0ad10dec257ab14a2701f74bb))
+
 ## [1.11.1](https://github.com/willow-memory/ratatosk/compare/v1.11.0...v1.11.1) (2026-09-23)
 
 
