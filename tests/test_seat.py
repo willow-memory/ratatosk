@@ -304,7 +304,9 @@ def test_blockers_refuse_the_seat_and_are_named():
     mcp = FakeMCP({"session_enter": blocked})
     with pytest.raises(_seat.SeatRefused) as info:
         _seat.enter(mcp, app_id="hanuman", session_id="s-1", dispatch_id="PKT00001")
-    assert "1 blocker" in str(info.value)
+    # No `scope` on this blocker fails closed as "entry" (an older broker
+    # that predates the scope split), so it still refuses exactly as before.
+    assert "1 entry blocker" in str(info.value)
     assert "no_egress_lease" in str(info.value)
 
 
@@ -329,6 +331,116 @@ def test_blockers_nested_under_orientation_are_read_too():
             dispatch_id="PKT00001",
         )
     assert "session_unattested" in str(info.value)
+
+
+def test_an_egress_only_blocker_does_not_refuse_a_specialist(capsys):
+    """The Loki-wake defect this scope split exists to fix: a dead egress
+    lease must never by itself refuse a specialist that needs no network at
+    all. Printed and kept on the entry, but entry succeeds."""
+    entered = _entered(
+        blockers={
+            "count": 1,
+            "items": [
+                {
+                    "id": "no_egress_lease",
+                    "summary": "no active lease",
+                    "scope": "egress",
+                }
+            ],
+        }
+    )
+    entry = _seat.enter(
+        FakeMCP({"session_enter": entered}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT00001",
+    )
+    assert entry.dispatch_id == "PKT00001"
+    assert [b["id"] for b in entry.blockers] == ["no_egress_lease"]
+    out = capsys.readouterr().out
+    assert "enters with 1 blocker(s)" in out and "no_egress_lease" in out
+
+
+def test_an_entry_scoped_blocker_still_refuses():
+    entered = _entered(
+        blockers={
+            "count": 1,
+            "items": [
+                {"id": "manifest_unreadable", "summary": "x", "scope": "entry"}
+            ],
+        }
+    )
+    with pytest.raises(_seat.SeatRefused) as info:
+        _seat.enter(
+            FakeMCP({"session_enter": entered}),
+            app_id="hanuman",
+            session_id="s-1",
+            dispatch_id="PKT00001",
+        )
+    assert "manifest_unreadable" in str(info.value)
+    assert "1 entry blocker" in str(info.value)
+
+
+def test_a_blocker_with_no_scope_fails_closed_and_refuses():
+    """An older broker that predates the scope field: a missing scope must
+    still refuse, exactly as before this split existed."""
+    entered = _entered(
+        blockers={"count": 1, "items": [{"id": "no_live_worker", "summary": "x"}]}
+    )
+    with pytest.raises(_seat.SeatRefused):
+        _seat.enter(
+            FakeMCP({"session_enter": entered}),
+            app_id="hanuman",
+            session_id="s-1",
+            dispatch_id="PKT00001",
+        )
+
+
+def test_a_blocker_with_an_unrecognized_scope_fails_closed_and_refuses():
+    entered = _entered(
+        blockers={
+            "count": 1,
+            "items": [{"id": "x", "summary": "y", "scope": "bogus"}],
+        }
+    )
+    with pytest.raises(_seat.SeatRefused):
+        _seat.enter(
+            FakeMCP({"session_enter": entered}),
+            app_id="hanuman",
+            session_id="s-1",
+            dispatch_id="PKT00001",
+        )
+
+
+def test_mixed_blockers_refuse_naming_only_the_entry_ones():
+    entered = _entered(
+        blockers={
+            "count": 2,
+            "items": [
+                {
+                    "id": "no_egress_lease",
+                    "summary": "no lease",
+                    "scope": "egress",
+                },
+                {
+                    "id": "manifest_unreadable",
+                    "summary": "bad manifest",
+                    "scope": "entry",
+                },
+            ],
+        }
+    )
+    with pytest.raises(_seat.SeatRefused) as info:
+        _seat.enter(
+            FakeMCP({"session_enter": entered}),
+            app_id="hanuman",
+            session_id="s-1",
+            dispatch_id="PKT00001",
+        )
+    msg = str(info.value)
+    assert "manifest_unreadable" in msg
+    assert "no_egress_lease" not in msg
+    assert "1 entry blocker" in msg
 
 
 def test_the_human_seat_runs_with_blockers_listed(capsys):
@@ -472,6 +584,41 @@ def test_the_persona_leads_and_the_repo_prompt_follows():
     prompt = entry.system_prompt("# CLAUDE.md\n\nrepo rules")
     assert prompt.startswith(PERSONA.strip())
     assert prompt.index("# Build the thing") < prompt.index("repo rules")
+
+
+def test_system_prompt_carries_an_egress_notice_after_the_assignment():
+    entered = _entered(
+        blockers={
+            "count": 1,
+            "items": [
+                {
+                    "id": "no_egress_lease",
+                    "summary": "no active lease",
+                    "scope": "egress",
+                }
+            ],
+        }
+    )
+    entry = _seat.enter(
+        FakeMCP({"session_enter": entered}),
+        app_id="hanuman",
+        session_id="s-1",
+        dispatch_id="PKT00001",
+    )
+    prompt = entry.system_prompt("# CLAUDE.md\n\nrepo rules")
+    assert "Egress closed:" in prompt
+    assert "no active lease" in prompt
+    assert "Local work and loopback tools are unaffected" in prompt
+    # Order: persona -> assignment -> egress notice -> repo prompt.
+    assert prompt.index("# Build the thing") < prompt.index("Egress closed:")
+    assert prompt.index("Egress closed:") < prompt.index("repo rules")
+
+
+def test_system_prompt_has_no_egress_notice_when_clear():
+    entry = _seat.enter(
+        FakeMCP({"session_enter": _entered()}), app_id="hanuman", session_id="s"
+    )
+    assert "Egress closed" not in entry.system_prompt("repo rules")
 
 
 def test_no_assignment_means_persona_then_repo():
