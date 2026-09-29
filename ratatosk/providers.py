@@ -60,8 +60,9 @@ class ProviderError(Exception):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
-        #: ``rate_limited`` / ``quota`` / ``timeout`` / ``overloaded`` /
-        #: ``bad_request`` / ``auth`` / ``transport`` — the receipt's word.
+        #: ``rate_limited`` / ``quota`` / ``timeout`` / ``too_large`` /
+        #: ``overloaded`` / ``bad_request`` / ``auth`` / ``transport`` — the
+        #: receipt's word.
         self.kind = kind
 
 
@@ -237,6 +238,14 @@ def _classify_http(status: int, body: str) -> tuple[bool, str]:
         return True, "quota"
     if status == 408:
         return True, "timeout"
+    if status == 413:
+        # Too large for THIS rung, not a malformed request: Groq's free tier
+        # answers 413 `rate_limit_exceeded` when one request is bigger than
+        # its tokens-per-minute cap (8000; a woken audit's first turn
+        # measured 13138 on 2026-09-29), which a rung with a larger window
+        # takes as is. Stepping is the fix; refusing stopped every audit at
+        # its first rung.
+        return True, "too_large"
     if status in _OVERLOADED_STATUS:
         return True, "overloaded"
     return False, "bad_request"
