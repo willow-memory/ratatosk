@@ -64,7 +64,7 @@
 # not have it, the MCP init handshake timed out, and Restart=on-failure spun
 # the unit forever.
 #
-# EnvironmentFile=@WILLOW_HOME@/env, THEN UnsetEnvironment= strips
+# EnvironmentFile=@WILLOW_HOME@/env.kart, THEN UnsetEnvironment= strips
 # everything a woken seat has no business holding — the same shape
 # nestor-ui.service.template and willow-mcp-manifest-grant.service.template
 # use, and the same reasoning: an unauthenticated background wake reads a
@@ -135,18 +135,24 @@
 # be re-checked by hand whenever a new key is added there) — unlike
 # WILLOW_HOME/WILLOW_STORE_ROOT above, nothing here claims Environment=
 # would win if the file ever did carry this key too.
-#   ANTHROPIC_API_KEY, GEMINI_API_KEY — Loki is an auditor (audit-class
-#                              ladder rungs); provider_ladder.json's audit
-#                              class names anthropic and gemini rungs, so
-#                              those are the two keys THIS seat's own class
-#                              can ever reach. The other four provider keys
-#                              (GROQ/CEREBRAS/OPENROUTER/HF) are named in
-#                              UnsetEnvironment= below, not kept — a
-#                              read-only audit wake has no use for build's
-#                              or research's rungs, and a narrower kept set
-#                              is the same reasoning the rest of this list
-#                              already follows. A future BUILD seat's own
-#                              unit file keeps the wider set its class uses.
+#   GROQ_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY — Loki is an auditor
+#                              (audit-class ladder rungs); since 2026-09-29
+#                              provider_ladder.json's audit class names the
+#                              groq, cerebras and openrouter rungs and no
+#                              paid one (pair a169d5ed), so those are the
+#                              three keys THIS seat's own class can reach.
+#                              ANTHROPIC/GEMINI/HF are named in
+#                              UnsetEnvironment= below, not kept: an audit
+#                              wake that could still hold the Anthropic key
+#                              is one forced model away from spending it.
+#                              A future BUILD seat's own unit file keeps the
+#                              wider set its class uses.
+# The keys come from @WILLOW_HOME@/env.kart, not @WILLOW_HOME@/env: env.kart
+# is the inference-only file the Kart worker units load (sealed b1e88cda),
+# and the one diagnostic_summary measures as populated under systemd. The
+# full env holds NESTOR_SEAL_KEY, which no woken seat should inherit. The
+# leading `-` keeps a missing env.kart from failing the unit: the ladder then
+# reads every keyed rung as `no key` and says so on the wake receipt.
 # Two keys a plain "keep everything WILLOW_/RATATOSK_/PG named" pass would
 # have kept, deliberately NOT kept (Loki FC9EDFB8 LOW — enumerated, not just
 # unset): WILLOW_PG_USER (ratatosk never opens a Postgres connection of its
@@ -186,8 +192,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=@HOME@/github/willow-memory/ratatosk
-EnvironmentFile=@WILLOW_HOME@/env
-UnsetEnvironment=CEREBRAS_API_KEY GROQ_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY OPENROUTER_API_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_VAULT_BOX
+EnvironmentFile=-@WILLOW_HOME@/env.kart
+UnsetEnvironment=ANTHROPIC_API_KEY GEMINI_API_KEY HF_API_KEY NESTOR_DB NESTOR_KEYRING NESTOR_PERSONAL_DB NESTOR_PERSONAL_LEDGER NESTOR_REQUIRE_SEAL_KEY NESTOR_SEAL_KEY WILLOW_APP_ID WILLOW_EDGE_GROQ_MODEL WILLOW_EDGE_OLLAMA_MODEL WILLOW_GEMINI_MODEL WILLOW_IN_KART WILLOW_INFERENCE_PROVIDER WILLOW_KEYRING WILLOW_NESTOR_DB WILLOW_OLLAMA_MODEL WILLOW_PGP_FINGERPRINT WILLOW_PG_DB WILLOW_PG_USER WILLOW_VAULT_BOX
 # An egress lease is not an entry gate (fix/lease-is-not-an-entry-blocker /
 # fix/refuse-only-entry-blockers), but this seat's WILLOW_HOME and
 # WILLOW_STORE_ROOT must still be the real ones, not a fallback — nothing

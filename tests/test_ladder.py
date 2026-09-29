@@ -86,6 +86,48 @@ def test_the_shipped_ladder_holds_key_names_not_values():
             )
 
 
+def test_the_shipped_audit_class_names_no_paid_rung():
+    """Pair a169d5ed (amending c9ca1a09 for seat audits): a woken audit steps
+    from one free provider to the next on a rate limit, never to a rung that
+    bills. Before 2026-09-29 audit was gemini -> anthropic, and the gemini key
+    answered 402, so every audit wake landed on Opus."""
+    raw = json.loads(_ladder.LADDER_PATH.read_text())
+    ladder = load_ladder()
+    for n in ladder.classes["audit"]:
+        tier = raw["rungs"][n]["budget"]["tier"]
+        assert tier == "free", f"audit names {n}, whose budget tier is {tier!r}"
+        assert ladder.rungs[n].dialect != "anthropic", f"audit names {n}"
+
+
+def _family(model: str) -> str:
+    """The model family an id belongs to: the leading letters of its last
+    path segment — qwen/qwen3.8-27b:free and qwen-3.8-27b are both qwen."""
+    seg = model.rsplit("/", 1)[-1].lower()
+    letters = ""
+    for ch in seg:
+        if not ch.isalpha():
+            break
+        letters += ch
+    return letters
+
+
+def test_family_reads_the_leading_letters_of_the_last_segment():
+    assert _family("qwen/qwen3.8-27b:free") == "qwen"
+    assert _family("qwen-3.8-27b") == "qwen"
+    assert _family("openai/gpt-oss-120b") == "gpt"
+    assert _family("nvidia/nemotron-3-super-120b-a12b:free") == "nemotron"
+
+
+def test_the_shipped_audit_class_shares_no_model_family_with_build():
+    """The ladder's own rule: an audit on the model family that built the
+    thing is not an audit. Checked across every rung either class names, so a
+    fall-through cannot land an audit on the builder's family either."""
+    ladder = load_ladder()
+    build = {_family(ladder.rungs[n].models["build"]) for n in ladder.classes["build"]}
+    audit = {_family(ladder.rungs[n].models["audit"]) for n in ladder.classes["audit"]}
+    assert not build & audit, f"audit shares {sorted(build & audit)} with build"
+
+
 def test_a_good_file_resolves_a_class_in_order():
     ladder = parse_ladder(_good())
     res = ladder.resolve(
