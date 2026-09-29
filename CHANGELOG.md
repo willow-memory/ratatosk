@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.2](https://github.com/willow-memory/ratatosk/compare/v1.12.1...v1.12.2) (2026-09-29)
+
+
+### Fixed
+
+* **providers:** a 413 steps to the next rung; audit leads with openrouter ([3c18595](https://github.com/willow-memory/ratatosk/commit/3c18595a7ca2b9c502d74dc0564aeebab4afd2b0))
+* **providers:** a 413 steps to the next rung; audit leads with openrouter ([#65](https://github.com/willow-memory/ratatosk/issues/65)) ([7bbc10f](https://github.com/willow-memory/ratatosk/commit/7bbc10f663e51458139ceb7106469c4897b79131))
+
 ## [1.12.1](https://github.com/willow-memory/ratatosk/compare/v1.12.0...v1.12.1) (2026-09-29)
 
 
