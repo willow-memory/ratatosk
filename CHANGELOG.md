@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.1](https://github.com/willow-memory/ratatosk/compare/v1.12.0...v1.12.1) (2026-09-29)
+
+
+### Fixed
+
+* **deploy:** loki's listener loads env.kart and keeps the audit ladder's keys ([04dbc14](https://github.com/willow-memory/ratatosk/commit/04dbc1435a79b2b750c3785302105befa92581c4))
+* **ladder:** audit runs on free cross-model rungs; loki's unit keeps their keys ([#63](https://github.com/willow-memory/ratatosk/issues/63)) ([c24f993](https://github.com/willow-memory/ratatosk/commit/c24f99371de9796c207f41ab10384c5aaa400991))
+* **ladder:** audit runs on free cross-model rungs; retire dead model ids ([b14503b](https://github.com/willow-memory/ratatosk/commit/b14503b7e475a5e0657dbd410258b11b1bf7d98a))
+
 ## [1.12.0](https://github.com/willow-memory/ratatosk/compare/v1.11.2...v1.12.0) (2026-09-29)
 
 
