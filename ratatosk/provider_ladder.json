@@ -17,18 +17,19 @@
       "base_url": "https://api.groq.com/openai/v1",
       "key_env": "GROQ_API_KEY",
       "models": {
-        "build": "llama-3.3-70b-versatile",
-        "research": "llama-3.3-70b-versatile",
-        "fast": "llama-3.1-8b-instant",
-        "operate": "llama-3.1-8b-instant",
-        "witness": "llama-3.1-8b-instant",
-        "chat": "llama-3.1-8b-instant",
-        "summarize": "llama-3.1-8b-instant"
+        "build": "qwen/qwen3.8-27b",
+        "audit": "openai/gpt-oss-120b",
+        "research": "openai/gpt-oss-120b",
+        "fast": "openai/gpt-oss-20b",
+        "operate": "openai/gpt-oss-20b",
+        "witness": "openai/gpt-oss-20b",
+        "chat": "openai/gpt-oss-20b",
+        "summarize": "openai/gpt-oss-20b"
       },
-      "budget": {"tier": "free", "unit": "requests/day", "note": "per-model RPM/RPD/TPM caps; verify in console"},
+      "budget": {"tier": "free", "unit": "requests/day", "note": "measured 2026-09-29 from x-ratelimit headers: 1000 requests/day, 8000 tokens/minute per model — the tokens/minute cap is the one a multi-turn wake meets first, so every class that names groq names a second provider after it. llama-3.3-70b-versatile and llama-3.1-8b-instant are gone from the catalog."},
       "issued": "2026-09-20",
-      "verify_at": "2026-09-20",
-      "status": "unmeasured"
+      "verify_at": "2026-09-29",
+      "status": "measured"
     },
     "cerebras": {
       "provider": "cerebras",
@@ -36,11 +37,12 @@
       "base_url": "https://api.cerebras.ai/v1",
       "key_env": "CEREBRAS_API_KEY",
       "models": {
-        "build": "llama-3.3-70b"
+        "build": "qwen-3.8-27b",
+        "audit": "gpt-oss-120b"
       },
-      "budget": {"tier": "free", "unit": "tokens/day", "note": "daily token cap; verify in console"},
+      "budget": {"tier": "free", "unit": "tokens/day", "note": "daily token cap; verify in console. Catalog 2026-09-29 lists only gpt-oss-120b and qwen-3.8-27b; llama-3.3-70b answers 404, which the client treats as the rung's defect, not weather — a dead id here stops the class at its first rung."},
       "issued": "2026-09-20",
-      "verify_at": "2026-09-20",
+      "verify_at": "2026-09-29",
       "status": "unmeasured"
     },
     "openrouter": {
@@ -49,13 +51,14 @@
       "base_url": "https://openrouter.ai/api/v1",
       "key_env": "OPENROUTER_API_KEY",
       "models": {
-        "build": "meta-llama/llama-3.3-70b-instruct:free",
-        "research": "google/gemini-2.5-flash:free"
+        "build": "qwen/qwen3.8-27b:free",
+        "audit": "nvidia/nemotron-3-super-120b-a12b:free",
+        "research": "nvidia/nemotron-3-super-120b-a12b:free"
       },
-      "budget": {"tier": "free", "unit": "requests/day", "note": ":free models only; OpenRouter's usage page is the spend view for every rung it fronts"},
+      "budget": {"tier": "free", "unit": "requests/day", "note": ":free models only; OpenRouter's usage page is the spend view for every rung it fronts. Both ids completed a tool call at cost 0 on 2026-09-29; the old llama and gemini :free ids are gone."},
       "issued": "2026-09-20",
-      "verify_at": "2026-09-20",
-      "status": "unmeasured"
+      "verify_at": "2026-09-29",
+      "status": "measured"
     },
     "gemini": {
       "provider": "google-ai-studio",
@@ -66,10 +69,10 @@
         "research": "gemini-2.5-flash",
         "audit": "gemini-2.5-pro"
       },
-      "budget": {"tier": "free", "unit": "requests/day", "note": "Flash has the generous free tier; Pro is small — verify; key should be API-restricted to Generative Language"},
+      "budget": {"tier": "prepaid", "unit": "usd", "note": "2026-09-29: both models answered 402 'prepayment credits are depleted' — this key sits on a billed project, not the free tier. No class names this rung until the project is topped up or the key moves to a free-tier project."},
       "issued": "2026-09-20",
-      "verify_at": "2026-09-20",
-      "status": "unmeasured"
+      "verify_at": "2026-09-29",
+      "status": "degraded"
     },
     "huggingface": {
       "provider": "huggingface-inference-providers",
@@ -111,7 +114,7 @@
         "build": "claude-sonnet-5",
         "audit": "claude-opus-5"
       },
-      "budget": {"tier": "paid", "unit": "usd", "note": "by task class only where the tiering ruling earns it (c9ca1a09 Sonnet-build / Opus-audit); the rung that costs money is the rung that must be inked hardest"},
+      "budget": {"tier": "paid", "unit": "usd", "note": "by task class only where the tiering ruling earns it (c9ca1a09 Sonnet-build / Opus-audit, amended for seat audits by pair a169d5ed: the Opus audit rung is operator opt-in, never a fall-through, so no class names it for audit); the rung that costs money is the rung that must be inked hardest"},
       "issued": null,
       "verify_at": null,
       "status": "measured"
@@ -119,8 +122,8 @@
   },
   "classes": {
     "build":     ["cerebras", "groq", "openrouter", "huggingface", "anthropic"],
-    "audit":     ["gemini", "anthropic"],
-    "research":  ["gemini", "openrouter", "groq"],
+    "audit":     ["groq", "cerebras", "openrouter"],
+    "research":  ["openrouter", "groq"],
     "operate":   ["groq", "ollama"],
     "witness":   ["groq", "ollama"],
     "chat":      ["ollama", "groq"],
@@ -129,7 +132,8 @@
     "fast":      ["ollama", "groq"]
   },
   "_classes_doc": [
-    "Order within a class is the fall-through order. 'audit' keeps a cross-model rung above the builder's ladder on purpose: an audit on the same free 70b that built the thing is not an audit.",
+    "Order within a class is the fall-through order. 'audit' keeps a cross-model rung above the builder's ladder on purpose: an audit on the same model family that built the thing is not an audit. Since 2026-09-29 build runs on qwen and audit on gpt-oss / nemotron; no audit model shares a family with a build model.",
+    "'audit' names no paid rung (pair a169d5ed, amending c9ca1a09 for seat audits): a rate limit steps to the next free provider, never to Opus. A paid audit is the operator's explicit ask, not a fall-through.",
     "Names match dispatch task_class / the envelope task classes (build-work-order -> build, auditor -> audit, librarian -> research, operator -> operate, witness -> witness).",
     "xAI/Grok is not a rung: console.x.ai went paid (operator, 2026-09-20)."
   ]
