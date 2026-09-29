@@ -191,9 +191,11 @@ def _raise_http(monkeypatch, code: int, body: str = ""):
         # this rung, so the ladder steps to one with a bigger window.
         (
             413,
-            '{"error":{"message":"Request too large for model on tokens per '
-            'minute (TPM): Limit 8000, Requested 13138","type":"tokens",'
-            '"code":"rate_limit_exceeded"}}',
+            (
+                '{"error":{"message":"Request too large for model on tokens per '
+                'minute (TPM): Limit 8000, Requested 13138","type":"tokens",'
+                '"code":"rate_limit_exceeded"}}'
+            ),
             True,
             "too_large",
         ),
