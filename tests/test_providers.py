@@ -186,6 +186,20 @@ def _raise_http(monkeypatch, code: int, body: str = ""):
         (503, "", True, "overloaded"),
         (529, "", True, "overloaded"),
         (408, "", True, "timeout"),
+        # Groq's answer to one request over its tokens-per-minute cap
+        # (2026-09-29, a woken audit's 13138-token first turn): too large for
+        # this rung, so the ladder steps to one with a bigger window.
+        (
+            413,
+            (
+                '{"error":{"message":"Request too large for model on tokens per '
+                'minute (TPM): Limit 8000, Requested 13138","type":"tokens",'
+                '"code":"rate_limit_exceeded"}}'
+            ),
+            True,
+            "too_large",
+        ),
+        (413, "", True, "too_large"),
         (401, "", False, "auth"),
         (403, "forbidden", False, "auth"),
         # Loki finding 4: Gemini's wording for a key restricted to the wrong
