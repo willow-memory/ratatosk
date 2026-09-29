@@ -185,10 +185,30 @@ def enter(
     dispatch_id: str | None = None,
     project: str = "",
     workspace: str = "",
+    runner: str = "seat",
 ) -> SeatEntry:
     """``session_enter`` as the seat. Raises ``SeatRefused`` on an error result
-    or on blockers — the loop must not start in either case."""
-    inputs: dict[str, Any] = {"app_id": app_id, "session_id": session_id}
+    or on blockers — the loop must not start in either case.
+
+    ``runner`` (dispatch 1AD03A64, N1): "seat" (default, a human-opened
+    crown/REPL entry) or "ratatosk" (the WAKE-activated daemon path, see
+    ``crown.run_wake``). Passed straight through to ``session_enter`` --
+    the broker refuses ERUNNER (surfaced as ``result.get("error")`` below,
+    same as any other refusal) when it does not match the packet's own
+    runner.
+
+    N6 (Loki 10A39E21 N6): ``held_by_other_session`` is a SUCCESSFUL
+    session_enter response (a re-entry into a packet another session
+    already accepted), not an ``error`` — but it is exactly as unusable: a
+    seat holding no claim on a packet cannot close it. Treated as refused
+    here so no caller of ``enter()`` (wake or human) ever starts a turn
+    loop, let alone a model call, on a packet it will only get ESESSION
+    back from at the end."""
+    inputs: dict[str, Any] = {
+        "app_id": app_id,
+        "session_id": session_id,
+        "runner": runner,
+    }
     if dispatch_id:
         inputs["dispatch_id"] = dispatch_id
     if project:
@@ -198,6 +218,11 @@ def enter(
     result = decode_result(mcp_call("session_enter", inputs))
     if result.get("error"):
         raise SeatRefused(f"session_enter refused: {result['error']}")
+    if result.get("held_by_other_session"):
+        raise SeatRefused(
+            "session_enter: packet is held_by_other_session -- this seat "
+            "did not accept it and cannot close it"
+        )
 
     blockers = _blockers(result)
     entry_mode = str(result.get("entry_mode") or "")
