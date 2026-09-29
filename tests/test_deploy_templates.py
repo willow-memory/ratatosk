@@ -227,8 +227,8 @@ def test_plant_unset_environment_naming_willow_mcp_python_is_caught():
     """Fires the scan on a text where UnsetEnvironment= was (wrongly) also
     given WILLOW_MCP_PYTHON — self-defeating alongside the explicit set."""
     poisoned = TEMPLATE.read_text(encoding="utf-8").replace(
-        "UnsetEnvironment=CEREBRAS_API_KEY",
-        "UnsetEnvironment=WILLOW_MCP_PYTHON CEREBRAS_API_KEY",
+        "UnsetEnvironment=ANTHROPIC_API_KEY",
+        "UnsetEnvironment=WILLOW_MCP_PYTHON ANTHROPIC_API_KEY",
     )
     offenders = willow_mcp_python_named_in_unset_environment(poisoned)
     assert offenders and "WILLOW_MCP_PYTHON" in offenders[0]
@@ -300,11 +300,50 @@ def test_willow_store_root_is_not_also_named_in_unset_environment():
 
 def test_plant_unset_environment_naming_willow_store_root_is_caught():
     poisoned = TEMPLATE.read_text(encoding="utf-8").replace(
-        "UnsetEnvironment=CEREBRAS_API_KEY",
-        "UnsetEnvironment=WILLOW_STORE_ROOT CEREBRAS_API_KEY",
+        "UnsetEnvironment=ANTHROPIC_API_KEY",
+        "UnsetEnvironment=WILLOW_STORE_ROOT ANTHROPIC_API_KEY",
     )
     offenders = named_in_unset_environment(poisoned, "WILLOW_STORE_ROOT")
     assert offenders and "WILLOW_STORE_ROOT" in offenders[0]
+
+
+def environment_files(text: str) -> list[str]:
+    """The path of every EnvironmentFile= line, with systemd's leading `-`
+    (missing-is-fine) stripped."""
+    return [
+        line.split("=", 1)[1].lstrip("-")
+        for line in text.splitlines()
+        if line.startswith("EnvironmentFile=")
+    ]
+
+
+def test_template_loads_env_kart_never_the_full_env():
+    """Sealed b1e88cda: a background process loads the inference-only
+    env.kart, never $WILLOW_HOME/env (it holds NESTOR_SEAL_KEY)."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert environment_files(text) == ["@WILLOW_HOME@/env.kart"]
+
+
+def test_plant_full_env_file_is_caught():
+    poisoned = TEMPLATE.read_text(encoding="utf-8").replace(
+        "EnvironmentFile=-@WILLOW_HOME@/env.kart", "EnvironmentFile=@WILLOW_HOME@/env"
+    )
+    assert environment_files(poisoned) == ["@WILLOW_HOME@/env"]
+
+
+def test_audit_seat_keeps_its_ladder_keys_and_strips_the_paid_one():
+    """Pair a169d5ed: the audit class names groq, cerebras and openrouter and
+    no paid rung. Loki keeps exactly the keys its class reaches, and the
+    Anthropic key is stripped so no forced model can spend it."""
+    from ratatosk.ladder import load_ladder
+
+    ladder = load_ladder()
+    audit_keys = {ladder.rungs[n].key_env for n in ladder.classes["audit"]} - {None}
+    unset = unset_environment_names(TEMPLATE.read_text(encoding="utf-8"))
+    assert audit_keys and not audit_keys & unset, (
+        f"audit keys stripped: {audit_keys & unset}"
+    )
+    assert "ANTHROPIC_API_KEY" in unset
 
 
 def test_template_has_no_hardcoded_home_path():
