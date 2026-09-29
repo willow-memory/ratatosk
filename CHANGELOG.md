@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/willow-memory/ratatosk/compare/v1.11.2...v1.12.0) (2026-09-29)
+
+
+### Added
+
+* **listener:** accept only packets marked runner=ratatosk; stand down on held or refused ([#61](https://github.com/willow-memory/ratatosk/issues/61)) ([b724ffa](https://github.com/willow-memory/ratatosk/commit/b724ffa386c5d9a5410c44acb3e867858a16e14a))
+* **seat:** listener opt-in, held-session guard, and Q3 budget handling ([18ac57b](https://github.com/willow-memory/ratatosk/commit/18ac57bf49bbfb6d9495542074d8ed821faa69eb))
+
 ## [1.11.2](https://github.com/willow-memory/ratatosk/compare/v1.11.1...v1.11.2) (2026-09-28)
 
 
