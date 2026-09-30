@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.12.4](https://github.com/willow-memory/ratatosk/compare/v1.12.3...v1.12.4) (2026-09-30)
+
+
+### Fixed
+
+* **wake:** a woken seat knows who it is, and its broker calls go out as it ([#69](https://github.com/willow-memory/ratatosk/issues/69)) ([488812c](https://github.com/willow-memory/ratatosk/commit/488812c47150d1ce8fadf92d9d0c33418d0e013d))
+* **wake:** a woken seat's broker calls go out as the seat ([47e2198](https://github.com/willow-memory/ratatosk/commit/47e219808389fb46a4aca6b2436cf0b6eb12d442))
+* **wake:** fill the seat's app_id when a broker call leaves it out ([690ace0](https://github.com/willow-memory/ratatosk/commit/690ace061e40f421f82472d687147606b5fab5df))
+* **wake:** tell the seat who it is and which packet it closes ([f688905](https://github.com/willow-memory/ratatosk/commit/f688905ffda74bf96d0616672062398f734a80f0))
+
 ## [1.12.3](https://github.com/willow-memory/ratatosk/compare/v1.12.2...v1.12.3) (2026-09-30)
 
 
