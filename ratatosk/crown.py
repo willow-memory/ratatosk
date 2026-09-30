@@ -815,6 +815,21 @@ def _run_turn_bounded(
         state.history.append({"role": "user", "content": tool_results})
 
 
+def _wake_identity_line(entry) -> str:
+    """What a woken seat is told before its brief. On 2026-09-30 (E693382F)
+    the seat spent two of its eight calls, 34-60 s each, asking whoami and
+    guessing its app_id from the repo in the brief. It is told instead, with
+    the one fact every closeout needs: which packet it is closing."""
+    return (
+        f"[wake] You are the {entry.app_id} seat: every broker call you make "
+        f"goes out as app_id={entry.app_id}, whatever the brief names. You are "
+        f"working dispatch {entry.dispatch_id}; close it with "
+        f"{entry.closeout_tool}(app_id={entry.app_id}, "
+        f"dispatch_id={entry.dispatch_id}, findings=[...]). No need to call "
+        "whoami.\n\n"
+    )
+
+
 def _schema_takes_app_id(state: RuntimeState, tool_name: str) -> bool:
     for tool in getattr(state, "all_tools", None) or []:
         if tool.get("name") == tool_name:
@@ -1255,8 +1270,9 @@ def run_wake(
                 seat=entry,
             )
 
-            prompt = entry.assignment.strip() or (
-                "Work the assigned packet — see the persona and assignment above."
+            prompt = _wake_identity_line(entry) + (
+                entry.assignment.strip()
+                or "Work the assigned packet — see the persona and assignment above."
             )
             deadline = time.monotonic() + max(0.0, wall_clock_seconds)
             outcome = _run_turn_bounded(
