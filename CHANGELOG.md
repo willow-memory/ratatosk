@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.7](https://github.com/willow-memory/ratatosk/compare/v1.12.6...v1.12.7) (2026-09-30)
+
+
+### Fixed
+
+* **wake:** the last call names its closeout; unoffered tools are refused ([24844c8](https://github.com/willow-memory/ratatosk/commit/24844c8486f1d9161991431bea0f2885c18019d5))
+* **wake:** the last call names its closeout; unoffered tools are refused ([#75](https://github.com/willow-memory/ratatosk/issues/75)) ([630911b](https://github.com/willow-memory/ratatosk/commit/630911b1d5fc2ee65ee218e29d7737ef9291eb2b))
+
 ## [1.12.6](https://github.com/willow-memory/ratatosk/compare/v1.12.5...v1.12.6) (2026-09-30)
 
 
