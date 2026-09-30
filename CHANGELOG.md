@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.6](https://github.com/willow-memory/ratatosk/compare/v1.12.5...v1.12.6) (2026-09-30)
+
+
+### Fixed
+
+* **wake:** the last call closes; an accepted closeout ends the wake ([d97103d](https://github.com/willow-memory/ratatosk/commit/d97103d475227c370125c513d9bc517761d32042))
+* **wake:** the last call closes; an accepted closeout ends the wake ([#73](https://github.com/willow-memory/ratatosk/issues/73)) ([bae3a34](https://github.com/willow-memory/ratatosk/commit/bae3a34c333ca2f6ad2261521ed35a079b73c6fc))
+
 ## [1.12.5](https://github.com/willow-memory/ratatosk/compare/v1.12.4...v1.12.5) (2026-09-30)
 
 
