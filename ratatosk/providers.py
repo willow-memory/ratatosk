@@ -251,6 +251,25 @@ def _classify_http(status: int, body: str) -> tuple[bool, str]:
     return False, "bad_request"
 
 
+def _in_body_status(data: Mapping[str, Any]) -> int | None:
+    """The HTTP-style status inside a 200 body's `error` object, or None.
+
+    Only a body with an `error` object, no `choices`, and an integer `code`
+    in the 100–599 range counts: anything else keeps the old reading, out of
+    shape, so a garbled body cannot pass itself off as weather."""
+    err = data.get("error")
+    if not isinstance(err, Mapping) or data.get("choices"):
+        return None
+    code = err.get("code")
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if isinstance(code, int) and 100 <= code <= 599:
+        return code
+    return None
+
+
 def _malformed(base_url: str, what: str) -> ProviderError:
     """The rung answered, but not in the protocol. Its defect, not weather:
     stepping past it would hide a proxy or an outage page behind whichever
@@ -334,6 +353,22 @@ class OpenAICompatibleClient:
         if not isinstance(data, dict):
             raise _malformed(
                 self.base_url, f"200 body is {type(data).__name__}, not an object"
+            )
+        in_body = _in_body_status(data)
+        if in_body is not None:
+            # A router answering 200 on behalf of an upstream that failed:
+            # OpenRouter sends `{"error": {"code": 503, ...}}` with no
+            # choices when the model's host is overloaded (2026-09-29, audit
+            # wake B5B2D017, after three good calls). The code inside means
+            # what the same HTTP status would, so it is classified as one —
+            # weather steps to the next rung, a key problem still surfaces.
+            retryable, kind = _classify_http(in_body, json.dumps(data["error"]))
+            raise ProviderError(
+                f"HTTP 200 carrying error {in_body} from {self.base_url}: "
+                f"{redact(json.dumps(data['error'])[:300])}",
+                retryable=retryable,
+                status=in_body,
+                kind=kind,
             )
         return data
 
