@@ -856,6 +856,24 @@ def _cap_wake_result(result: str, cap: int = WAKE_RESULT_CAP) -> str:
     )
 
 
+def _poll_task_status(state: RuntimeState, task_id: str) -> object | None:
+    """One ``task_status`` read for the seat's own task, or None when the
+    call raised — a poll that raises is a poll that did not answer, and the
+    wait goes on to the next one."""
+    try:
+        return _tools.dispatch(
+            "task_status",
+            {"app_id": state.seat.app_id, "task_id": task_id},
+            state.mcp_names,
+            state.mcp_call,
+            trusted=True,
+            policy_store=None,
+            hook_runtime=None,
+        )
+    except Exception:
+        return None
+
+
 def _await_kart(state: RuntimeState, result: object, deadline: float | None) -> object:
     """A woken seat's ``task_submit`` returns a task id, not output — the
     model then needs a second call (``task_status``) per read, and on
@@ -882,17 +900,8 @@ def _await_kart(state: RuntimeState, result: object, deadline: float | None) -> 
     last = None
     while time.monotonic() < stop:
         time.sleep(KART_POLL_SECONDS)
-        try:
-            last = _tools.dispatch(
-                "task_status",
-                {"app_id": state.seat.app_id, "task_id": task_id},
-                state.mcp_names,
-                state.mcp_call,
-                trusted=True,
-                policy_store=None,
-                hook_runtime=None,
-            )
-        except Exception:  # a poll that raises is a poll that did not answer
+        last = _poll_task_status(state, task_id)
+        if last is None:
             continue
         try:
             status = json.loads(str(last)).get("status")
