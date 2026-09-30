@@ -559,6 +559,11 @@ def main(argv: list[str] | None = None) -> None:
     print("  [mcp] connecting…", flush=True)
     mcp_extra_tools, mcp_names = mcp_client.start()
     mcp_call = mcp_client.call
+    if args.app_id:
+        mcp_extra_tools, mcp_names, note = mcp_client.granted_only(
+            mcp_extra_tools, mcp_names, mcp_call, args.app_id
+        )
+        print(f"  [mcp] {note}", flush=True)
     bound = grove.connect(mcp_call)
     if not bound.ok:
         print(f"  [grove] {bound.detail}", flush=True)
