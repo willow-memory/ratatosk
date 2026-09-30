@@ -815,6 +815,15 @@ def _run_turn_bounded(
         state.history.append({"role": "user", "content": tool_results})
 
 
+def _schema_takes_app_id(state: RuntimeState, tool_name: str) -> bool:
+    for tool in getattr(state, "all_tools", None) or []:
+        if tool.get("name") == tool_name:
+            schema = tool.get("input_schema") or {}
+            props = schema.get("properties") if isinstance(schema, dict) else None
+            return isinstance(props, dict) and "app_id" in props
+    return False
+
+
 def _pin_seat_app_id(state: RuntimeState, tu: dict) -> dict:
     """A woken seat's broker calls go out as the seat. A brief that says
     "close with handoff_write_v4 to willow" read as `app_id=willow` to the
@@ -828,14 +837,23 @@ def _pin_seat_app_id(state: RuntimeState, tu: dict) -> dict:
     if seat is None or tu.get("name") not in state.mcp_names:
         return tu
     inputs = tu.get("input")
-    if not isinstance(inputs, dict) or "app_id" not in inputs:
+    if not isinstance(inputs, dict):
         return tu
-    if inputs["app_id"] == seat.app_id:
+    if "app_id" not in inputs:
+        # The other half (2026-09-30, E693382F): the model called whoami with
+        # no app_id at all and the broker answered no_app_id. Filled in only
+        # when the tool's own schema declares an app_id parameter — read from
+        # the definition the model was sent, never assumed for every tool.
+        if not _schema_takes_app_id(state, tu["name"]):
+            return tu
+        note = f"[wake] {tu['name']} named no app_id; sent as the seat, app_id={seat.app_id!r}"
+    elif inputs["app_id"] == seat.app_id:
         return tu
-    note = (
-        f"[wake] {tu['name']} named app_id={inputs['app_id']!r}; sent as the "
-        f"seat, app_id={seat.app_id!r}"
-    )
+    else:
+        note = (
+            f"[wake] {tu['name']} named app_id={inputs['app_id']!r}; sent as the "
+            f"seat, app_id={seat.app_id!r}"
+        )
     with contextlib.suppress(Exception):
         state.writer.write_system(note)
     return {**tu, "input": {**inputs, "app_id": seat.app_id}}
