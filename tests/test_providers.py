@@ -292,6 +292,64 @@ def test_a_200_out_of_shape_is_a_provider_error_not_a_crash(monkeypatch, raw, wh
     assert what in str(info.value)
 
 
+@pytest.mark.parametrize(
+    ("body", "retryable", "kind", "status"),
+    [
+        # OpenRouter's live answer on 2026-09-29 (audit wake B5B2D017): the
+        # upstream was overloaded, so the router said 200 and put 503 inside.
+        (
+            {
+                "id": "gen-1",
+                "error": {
+                    "message": (
+                        "Upstream error from Nvidia: Service temporarily overloaded"
+                    ),
+                    "code": 503,
+                    "metadata": {"error_type": "provider_overloaded"},
+                },
+            },
+            True,
+            "overloaded",
+            503,
+        ),
+        ({"error": {"code": 429, "message": "slow down"}}, True, "rate_limited", 429),
+        ({"error": {"code": "502"}}, True, "overloaded", 502),
+        # A key problem inside a 200 still surfaces; it is never weather.
+        ({"error": {"code": 401, "message": "no auth"}}, False, "auth", 401),
+    ],
+)
+def test_an_error_code_inside_a_200_is_classified_like_its_status(
+    monkeypatch, body, retryable, kind, status
+):
+    _serve(monkeypatch, body)
+    with pytest.raises(ProviderError) as info:
+        OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert info.value.retryable is retryable
+    assert info.value.kind == kind
+    assert info.value.status == status
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": {"code": "rate_limit_exceeded"}},
+        {"error": {"code": True}},
+        {"error": {"code": 42}},
+        {"error": "overloaded"},
+        {"error": {"message": "no code at all"}},
+    ],
+)
+def test_an_in_body_error_without_a_status_code_stays_malformed(monkeypatch, body):
+    """Only an integer HTTP-range code is read as a status; anything else is
+    the rung out of shape, as before, so a garbled body cannot pass for
+    weather and step quietly past a broken rung."""
+    _serve(monkeypatch, body)
+    with pytest.raises(ProviderError) as info:
+        OpenAICompatibleClient("https://f.example", "k").complete(_REQ)
+    assert info.value.kind == "malformed"
+    assert info.value.retryable is False
+
+
 def test_a_text_block_without_text_does_not_crash(monkeypatch):
     _serve(monkeypatch, {"choices": [{"message": {"content": [{"type": "text"}]}}]})
     done = OpenAICompatibleClient("https://f.example", "k").complete(_REQ)

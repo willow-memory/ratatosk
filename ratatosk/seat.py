@@ -458,6 +458,10 @@ def summarize(entries: list[dict]) -> dict:
     }
 
 
+#: How much of the seat's own final answer a closeout carries.
+FINAL_ANSWER_CAP = 8000
+
+
 def build_findings(summary: dict, entry: SeatEntry, jsonl_path: str) -> list[dict]:
     """Findings the verifier will accept: each carries an ``evidence`` list
     that names a checkable thing — the JSONL path, a count from the
@@ -509,6 +513,23 @@ def build_findings(summary: dict, entry: SeatEntry, jsonl_path: str) -> list[dic
                 "evidence": list(summary["notices"]),
             }
         )
+    final = str(summary.get("next_bite") or "").strip()
+    if final and entry.dispatch_id:
+        # A seat that ends its run with a written answer instead of calling
+        # the closeout itself: that answer IS the work (an audit's verdict),
+        # and a dispatch closeout used to carry only the bookkeeping above,
+        # so the verdict was dropped on the floor. Carried as the seat wrote
+        # it, capped, and labelled as the seat's own words — crown does not
+        # grade it.
+        if len(final) > FINAL_ANSWER_CAP:
+            final = final[:FINAL_ANSWER_CAP] + "\n[… cut at the closeout's cap]"
+        findings.append(
+            {
+                "title": "the seat's final answer",
+                "severity": "info",
+                "evidence": [final],
+            }
+        )
     return findings
 
 
@@ -532,6 +553,15 @@ def close(mcp_call, entry: SeatEntry, entries: list[dict], jsonl_path: str) -> d
     """Call the closeout the broker named. Returns the decoded result — an
     ``error`` key on refusal — and never raises: the caller inks whichever."""
     summary = summarize(entries)
+    if entry.dispatch_id and summary["tools"].get(entry.closeout_tool):
+        # The seat already called its own closeout during the run: its
+        # handoff (the verdict, in its own words) is the record. Writing a
+        # second one would be refused by the broker's write-once guard and
+        # ink the wake as an error — or, on a broker without the guard,
+        # replace the seat's findings with crown's bookkeeping. The transcript
+        # records that the call was made, not what the broker answered, so the
+        # receipt says only that.
+        return {"status": "seat_called_closeout"}
     findings = build_findings(summary, entry, jsonl_path)
     text = narrative(summary, entry)
     if entry.closeout_tool == CLOSEOUT_DISPATCH:
