@@ -139,6 +139,50 @@ def start(argv: list[str] | None = None) -> tuple[list[dict], set[str]]:
     return anthropic_tools, names
 
 
+#: Tools the broker answers for any caller, so a seat's grant never removes
+#: them from its list (whoami is ungated on the broker side).
+_ALWAYS_LISTED = frozenset({"whoami"})
+
+
+def granted_only(
+    tools: list[dict], names: set[str], mcp_call, app_id: str
+) -> tuple[list[dict], set[str], str]:
+    """Narrow what `start` listed to what `app_id`'s manifest grants.
+
+    The broker lists every registered tool to every caller, so a seat that
+    sends the whole list asks for tools its manifest denies (gap 565d2f8251fe:
+    ~30 ``gate: 'loki' denied tool`` lines per listener start, burying the
+    real wake lines). The broker's own ``whoami`` answers ``tools_allowed`` —
+    the exact predicate its gate enforces — so this reads that, never a list
+    kept here.
+
+    Returns ``(tools, names, note)``. When ``whoami`` errors or carries no
+    ``tools_allowed`` the full list comes back unchanged and ``note`` says
+    why: not knowing the grant is no reason to strip a seat of its tools.
+    """
+    # Local import: seat imports this module at load time.
+    from ratatosk.seat import decode_result
+
+    unread = "grant unread ({}); listing unfiltered"
+    try:
+        answer = decode_result(mcp_call("whoami", {"app_id": app_id}))
+    except Exception as exc:
+        return tools, names, unread.format(f"whoami raised: {exc}")
+    if answer.get("error"):
+        return tools, names, unread.format(f"whoami: {answer['error']}")
+    allowed = answer.get("tools_allowed")
+    if not isinstance(allowed, list) or not all(isinstance(a, str) for a in allowed):
+        return tools, names, unread.format("whoami named no tools_allowed")
+    keep = set(allowed) | _ALWAYS_LISTED
+    kept = [t for t in tools if t.get("name") in keep]
+    kept_names = {n for n in names if n in keep}
+    note = (
+        f"{app_id} granted {len(kept)} of {len(tools)} tools "
+        f"({len(tools) - len(kept)} not requested)"
+    )
+    return kept, kept_names, note
+
+
 def _tool_schema(tool) -> dict:
     schema = getattr(tool, "input_schema", None)
     if schema is None:
