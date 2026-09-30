@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.8](https://github.com/willow-memory/ratatosk/compare/v1.12.7...v1.12.8) (2026-09-30)
+
+
+### Fixed
+
+* listener asks the broker only for tools its seat is granted ([#77](https://github.com/willow-memory/ratatosk/issues/77)) ([14d553d](https://github.com/willow-memory/ratatosk/commit/14d553df36e9a0587a267e952a9bf9f4df34759a))
+* **listener:** ask the broker only for the tools the seat's manifest grants ([84d9c13](https://github.com/willow-memory/ratatosk/commit/84d9c133f65a1e8dd572949297383010adbb6c97))
+
 ## [1.12.7](https://github.com/willow-memory/ratatosk/compare/v1.12.6...v1.12.7) (2026-09-30)
 
 
