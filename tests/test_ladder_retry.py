@@ -123,7 +123,7 @@ def test_the_retry_is_one_walk_not_a_loop():
 
 def test_no_transient_refusal_means_no_pause_and_no_retry():
     slept = []
-    router, fakes = _router(
+    router, _fakes = _router(
         {
             "a": [_err("quota", 402)],
             "b": [_err("too_large", 413)],
