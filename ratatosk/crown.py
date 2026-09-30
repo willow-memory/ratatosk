@@ -709,6 +709,8 @@ def _run_turn_bounded(
 
         tool_results = []
         for tu in tool_uses:
+            if non_interactive:
+                tu = _pin_seat_app_id(state, tu)
             if non_interactive and tu["name"] in _wake_policy.GATED_TOOLS:
                 # Loki FC9EDFB8 finding 5: checked BEFORE ``_tools.dispatch``
                 # is ever called, unconditionally — not from inside a
@@ -811,6 +813,32 @@ def _run_turn_bounded(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+def _pin_seat_app_id(state: RuntimeState, tu: dict) -> dict:
+    """A woken seat's broker calls go out as the seat. A brief that says
+    "close with handoff_write_v4 to willow" read as `app_id=willow` to the
+    model (2026-09-29, C5F04583): the broker refused it
+    (`orchestrator_human_required`) and the verdict had nowhere to land.
+    Any MCP call whose input names an `app_id` other than the seat's own
+    has it replaced, and the transcript says so. A call that names no
+    `app_id` is left alone — this only corrects an identity the model got
+    wrong, it never adds one."""
+    seat = state.seat
+    if seat is None or tu.get("name") not in state.mcp_names:
+        return tu
+    inputs = tu.get("input")
+    if not isinstance(inputs, dict) or "app_id" not in inputs:
+        return tu
+    if inputs["app_id"] == seat.app_id:
+        return tu
+    note = (
+        f"[wake] {tu['name']} named app_id={inputs['app_id']!r}; sent as the "
+        f"seat, app_id={seat.app_id!r}"
+    )
+    with contextlib.suppress(Exception):
+        state.writer.write_system(note)
+    return {**tu, "input": {**inputs, "app_id": seat.app_id}}
 
 
 #: Wake outcomes that leave the packet `working` instead of writing a
