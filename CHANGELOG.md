@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.5](https://github.com/willow-memory/ratatosk/compare/v1.12.4...v1.12.5) (2026-09-30)
+
+
+### Fixed
+
+* **ladder:** retry transient refusals once; audit's second rung is nemotron-ultra, not cerebras ([8ae6395](https://github.com/willow-memory/ratatosk/commit/8ae6395577cc6401228e9ff489d0cee54607929a))
+* **ladder:** retry transient refusals once; audit's second rung is nemotron-ultra, not cerebras ([#71](https://github.com/willow-memory/ratatosk/issues/71)) ([e27a768](https://github.com/willow-memory/ratatosk/commit/e27a7687669d348e1abb144c48b1e7c7c6cfca40))
+
 ## [1.12.4](https://github.com/willow-memory/ratatosk/compare/v1.12.3...v1.12.4) (2026-09-30)
 
 
