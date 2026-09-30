@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.3](https://github.com/willow-memory/ratatosk/compare/v1.12.2...v1.12.3) (2026-09-30)
+
+
+### Fixed
+
+* **providers:** an error code inside a 200 is classified like its status ([5751865](https://github.com/willow-memory/ratatosk/commit/5751865f1ab07a07ea83d7e43a8241c493977d2f))
+* **wake:** a failed wake keeps its packet; the seat's answer reaches the handoff; in-body errors step ([#67](https://github.com/willow-memory/ratatosk/issues/67)) ([428c351](https://github.com/willow-memory/ratatosk/commit/428c351a14dd99a52e24439c7301eac7e8282b35))
+* **wake:** keep a failed wake's packet, carry the seat's answer, await its own Kart reads ([dbd579b](https://github.com/willow-memory/ratatosk/commit/dbd579b66e8aabf2d153a461a4231d1ac58d04af))
+
 ## [1.12.2](https://github.com/willow-memory/ratatosk/compare/v1.12.1...v1.12.2) (2026-09-29)
 
 
