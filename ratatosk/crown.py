@@ -798,6 +798,10 @@ def _run_turn_bounded(
                     policy_store=state.policy,
                     hook_runtime=state.hooks,
                 )
+            if non_interactive:
+                if tu["name"] == "task_submit":
+                    result = _await_kart(state, result, deadline)
+                result = _cap_wake_result(str(result))
             print(f"  [tool:{tu['name']}] → {str(result)[:120]}", flush=True)
             try:
                 state.writer.write_tool(tu["name"], tu["id"], len(str(result)))
@@ -807,6 +811,96 @@ def _run_turn_bounded(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+
+
+#: Wake outcomes that leave the packet `working` instead of writing a
+#: closeout: nothing the seat did is a completion crown can back.
+_LEFT_WORKING_OUTCOMES = frozenset(
+    {"budget_turns", "budget_seconds", "ladder_refused", "empty_answer"}
+)
+
+
+def _wake_tools(all_tools: list[dict], wake_policy) -> list[dict]:
+    """The tool definitions a wake sends: every one, less the gated local
+    tools this seat's wake policy would refuse anyway (Bash always; Write
+    and Edit when the policy has no write scope). A refused tool's schema
+    is paid for on every model call and can only ever come back refused."""
+    if wake_policy is None:
+        return all_tools
+    refused = set(_wake_policy.FORBIDDEN_TOOLS)
+    for name in _wake_policy.SCOPED_TOOLS:
+        if not wake_policy.permits(name) or wake_policy.write_scope is None:
+            refused.add(name)
+    return [t for t in all_tools if t.get("name") not in refused]
+
+
+#: A woken seat's history is resent on every model call, so one oversized
+#: tool result is paid for on every later turn (2026-09-29, B5B2D017: a
+#: 9053-char whoami). Past this many chars a wake keeps the head and says
+#: how much it cut.
+WAKE_RESULT_CAP = 6000
+#: How long a wake waits for its own Kart task before handing the model the
+#: pending answer instead. Kart reads finish in seconds; the wall-clock
+#: deadline still wins.
+KART_WAIT_SECONDS = 45.0
+KART_POLL_SECONDS = 2.0
+_KART_OPEN = ("pending", "running", "held_net_authorization")
+
+
+def _cap_wake_result(result: str, cap: int = WAKE_RESULT_CAP) -> str:
+    if len(result) <= cap:
+        return result
+    return (
+        result[:cap] + f"\n[… {len(result) - cap} more chars cut — the wake keeps tool "
+        "results short; ask for a narrower slice]"
+    )
+
+
+def _await_kart(state: RuntimeState, result: object, deadline: float | None) -> object:
+    """A woken seat's ``task_submit`` returns a task id, not output — the
+    model then needs a second call (``task_status``) per read, and on
+    2026-09-29 (B5B2D017) it spent those calls on ``whoami`` instead. Here
+    crown waits for the seat's own task, bounded by ``KART_WAIT_SECONDS``
+    and the wake deadline, and hands back the submit answer with the
+    finished task's status appended. A task still open when the wait ends,
+    a held task, or an answer that is not a task id is returned as it was:
+    the model can still poll ``task_status`` itself."""
+    try:
+        submitted = json.loads(str(result))
+    except (json.JSONDecodeError, TypeError):
+        return result
+    if not isinstance(submitted, dict):
+        return result
+    task_id = submitted.get("task_id")
+    if not task_id or submitted.get("status") not in ("pending", "running"):
+        return result
+    if state.seat is None or "task_status" not in state.mcp_names:
+        return result
+    stop = time.monotonic() + KART_WAIT_SECONDS
+    if deadline is not None:
+        stop = min(stop, deadline)
+    last = None
+    while time.monotonic() < stop:
+        time.sleep(KART_POLL_SECONDS)
+        try:
+            last = _tools.dispatch(
+                "task_status",
+                {"app_id": state.seat.app_id, "task_id": task_id},
+                state.mcp_names,
+                state.mcp_call,
+                trusted=True,
+                policy_store=None,
+                hook_runtime=None,
+            )
+        except Exception:  # a poll that raises is a poll that did not answer
+            continue
+        try:
+            status = json.loads(str(last)).get("status")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            status = None
+        if status not in _KART_OPEN:
+            return f"{result}\n\n[kart {task_id} finished — task_status]\n{last}"
+    return result
 
 
 def _wake_policy_verdict(
@@ -1093,7 +1187,9 @@ def run_wake(
                 writer=writer,
                 history=[],
                 system_prompt=entry.system_prompt(_load_system_prompt()),
-                all_tools=_tools.BASE_TOOLS + (mcp_extra_tools or []),
+                all_tools=_wake_tools(
+                    _tools.BASE_TOOLS + (mcp_extra_tools or []), entry.wake_policy
+                ),
                 mcp_names=mcp_names or set(),
                 mcp_call=mcp_call,
                 client=None,
@@ -1142,7 +1238,11 @@ def run_wake(
     # whatever this function returns to the WAKE's reply channel, so the
     # note in the final receipt line below IS the note to the desk -- no
     # separate Grove call is needed.
-    if outcome in ("budget_turns", "budget_seconds"):
+    # The same holds for a wake that never got an answer to stand on: every
+    # rung refused, or one answered nothing. Closing turned one transient
+    # provider hiccup into a spent packet with no audit in it (2026-09-29:
+    # 39397B98 and B5B2D017 both closed `complete` on a ladder refusal).
+    if outcome in _LEFT_WORKING_OUTCOMES:
         closed = {
             "left_working": True,
             "reason": outcome,
@@ -1150,10 +1250,15 @@ def run_wake(
             "session_id": entry.session_id,
             "dispatch_id": entry.dispatch_id,
         }
+        why = (
+            "budget exhausted"
+            if outcome.startswith("budget_")
+            else "no rung answered the turn"
+        )
         note = (
             f"[ratatosk] seat left packet working app={entry.app_id} "
-            f"dispatch={entry.dispatch_id} reason={outcome} -- budget "
-            f"exhausted, not closed (ruling Q3)"
+            f"dispatch={entry.dispatch_id} reason={outcome} -- {why}, "
+            f"not closed (ruling Q3)"
         )
         print(f"  {note}", flush=True)
         with contextlib.suppress(Exception):
