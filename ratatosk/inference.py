@@ -16,6 +16,7 @@ naming it; exhausting the ladder refuses listing every rung's reason.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
@@ -34,6 +35,15 @@ from ratatosk.providers import (
 from ratatosk.redact import redact
 
 UNMEASURED = "unmeasured"
+
+#: Refusals that are weather at the provider — gone in seconds — and so
+#: worth one more try after a pause. `quota` (402) and `too_large` (413) are
+#: retryable in the sense that the NEXT rung may answer, but waiting does not
+#: change them, so they are not retried on the same rung.
+TRANSIENT_KINDS = frozenset({"rate_limited", "overloaded", "timeout", "transport"})
+#: The pause before the retry walk, for routers built by ``from_args`` (every
+#: crown session and wake).
+LADDER_RETRY_PAUSE = 10.0
 
 
 @dataclass
@@ -123,7 +133,13 @@ class InferenceRouter:
         writer=None,
         echo: Callable[[str], None] | None = None,
         force_dialect: str | None = None,
+        retry_pause: float | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ):
+        #: Seconds to wait before one more walk over the rungs that refused
+        #: transiently; None (the default) walks the ladder once, as before.
+        self._retry_pause = retry_pause
+        self._sleep = sleep
         self.ladder = ladder
         self.task_class = task_class
         self.forced_model = model
@@ -177,6 +193,7 @@ class InferenceRouter:
             writer=writer,
             echo=echo,
             force_dialect=force_dialect,
+            retry_pause=LADDER_RETRY_PAUSE,
         )
 
     def _default_factory(self, rung: Rung, model: str) -> Any:
@@ -222,74 +239,95 @@ class InferenceRouter:
             self._ink(receipt)
             raise LadderRefused(receipt.reason, receipt)
 
-        for index, verdict in enumerate(usable):
-            model = verdict.model or ""
-            request = Request(
-                model=model, system=system, messages=messages, tools=tools
-            )
-            try:
-                client = self._client(verdict)
-                completion = client.complete(request)
-            except ProviderError as exc:
-                step = TrailStep(verdict.rung.name, model, exc.kind, redact(str(exc)))
-                if exc.retryable:
-                    trail.append(step)
-                    continue
+        # One walk down the ladder, then — when the router was built with a
+        # retry pause — ONE more walk over only the rungs whose refusal was
+        # transient, after the pause. 2026-09-30, B4871ED9: openrouter was
+        # overloaded for one call while cerebras (402) and groq (413) could
+        # never have answered; the wake gave up on a hiccup a few seconds
+        # long. A quota or size refusal is not retried: waiting does not
+        # change it.
+        pending = list(enumerate(usable))
+        walks = 0
+        while pending:
+            transient: list[tuple[int, RungVerdict]] = []
+            for index, verdict in pending:
+                model = verdict.model or ""
+                request = Request(
+                    model=model, system=system, messages=messages, tools=tools
+                )
+                try:
+                    client = self._client(verdict)
+                    completion = client.complete(request)
+                except ProviderError as exc:
+                    step = TrailStep(
+                        verdict.rung.name, model, exc.kind, redact(str(exc))
+                    )
+                    if exc.retryable:
+                        trail.append(step)
+                        if exc.kind in TRANSIENT_KINDS:
+                            transient.append((index, verdict))
+                        continue
+                    receipt = TurnReceipt(
+                        task_class=self.task_class,
+                        outcome="refused",
+                        provider=verdict.rung.provider,
+                        model=model,
+                        rung=verdict.rung.name,
+                        rung_index=index,
+                        rung_count=len(usable),
+                        trail=trail,
+                        skipped=skipped,
+                        reason=f"{verdict.rung.name} ({exc.kind}): {step.reason}",
+                    )
+                    self._ink(receipt)
+                    raise LadderRefused(receipt.reason, receipt) from exc
+                except Exception as exc:
+                    # Anything else out of a client is that rung's defect (or
+                    # ours) and still a wake that must be inked — the failure
+                    # that most needs a receipt is the one that would otherwise
+                    # skip it. It refuses rather than steps: an unknown fault
+                    # is not weather.
+                    what = redact(f"{exc.__class__.__name__}: {exc}")
+                    receipt = TurnReceipt(
+                        task_class=self.task_class,
+                        outcome="refused",
+                        provider=verdict.rung.provider,
+                        model=model,
+                        rung=verdict.rung.name,
+                        rung_index=index,
+                        rung_count=len(usable),
+                        trail=trail,
+                        skipped=skipped,
+                        reason=f"{verdict.rung.name} (crash): {what}",
+                    )
+                    self._ink(receipt)
+                    raise LadderRefused(receipt.reason, receipt) from exc
+                self.current = verdict
                 receipt = TurnReceipt(
                     task_class=self.task_class,
-                    outcome="refused",
+                    outcome="ok",
                     provider=verdict.rung.provider,
-                    model=model,
+                    model=completion.raw_model or model,
                     rung=verdict.rung.name,
                     rung_index=index,
                     rung_count=len(usable),
+                    tokens_in=completion.tokens_in
+                    if completion.tokens_in is not None
+                    else UNMEASURED,
+                    tokens_out=completion.tokens_out
+                    if completion.tokens_out is not None
+                    else UNMEASURED,
+                    latency_ms=completion.latency_ms,
                     trail=trail,
                     skipped=skipped,
-                    reason=f"{verdict.rung.name} ({exc.kind}): {step.reason}",
                 )
                 self._ink(receipt)
-                raise LadderRefused(receipt.reason, receipt) from exc
-            except Exception as exc:
-                # Anything else out of a client is that rung's defect (or ours)
-                # and still a wake that must be inked — the failure that most
-                # needs a receipt is the one that would otherwise skip it. It
-                # refuses rather than steps: an unknown fault is not weather.
-                what = redact(f"{exc.__class__.__name__}: {exc}")
-                receipt = TurnReceipt(
-                    task_class=self.task_class,
-                    outcome="refused",
-                    provider=verdict.rung.provider,
-                    model=model,
-                    rung=verdict.rung.name,
-                    rung_index=index,
-                    rung_count=len(usable),
-                    trail=trail,
-                    skipped=skipped,
-                    reason=f"{verdict.rung.name} (crash): {what}",
-                )
-                self._ink(receipt)
-                raise LadderRefused(receipt.reason, receipt) from exc
-            self.current = verdict
-            receipt = TurnReceipt(
-                task_class=self.task_class,
-                outcome="ok",
-                provider=verdict.rung.provider,
-                model=completion.raw_model or model,
-                rung=verdict.rung.name,
-                rung_index=index,
-                rung_count=len(usable),
-                tokens_in=completion.tokens_in
-                if completion.tokens_in is not None
-                else UNMEASURED,
-                tokens_out=completion.tokens_out
-                if completion.tokens_out is not None
-                else UNMEASURED,
-                latency_ms=completion.latency_ms,
-                trail=trail,
-                skipped=skipped,
-            )
-            self._ink(receipt)
-            return completion, receipt
+                return completion, receipt
+            walks += 1
+            if self._retry_pause is None or walks > 1 or not transient:
+                break
+            self._sleep(self._retry_pause)
+            pending = transient
 
         receipt = TurnReceipt(
             task_class=self.task_class,

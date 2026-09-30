@@ -37,10 +37,9 @@
       "base_url": "https://api.cerebras.ai/v1",
       "key_env": "CEREBRAS_API_KEY",
       "models": {
-        "build": "qwen-3.8-27b",
-        "audit": "gpt-oss-120b"
+        "build": "qwen-3.8-27b"
       },
-      "budget": {"tier": "free", "unit": "tokens/day", "note": "daily token cap; verify in console. Catalog 2026-09-29 lists only gpt-oss-120b and qwen-3.8-27b; llama-3.3-70b answers 404, which the client treats as the rung's defect, not weather — a dead id here stops the class at its first rung."},
+      "budget": {"tier": "free", "unit": "tokens/day", "note": "daily token cap; verify in console. Catalog 2026-09-29 lists only gpt-oss-120b and qwen-3.8-27b; llama-3.3-70b answers 404, which the client treats as the rung's defect, not weather — a dead id here stops the class at its first rung. 2026-09-30 (B4871ED9): gpt-oss-120b answered 402 payment_required for this key, so cerebras left the audit class; a catalog listing is not free-tier access."},
       "issued": "2026-09-20",
       "verify_at": "2026-09-29",
       "status": "unmeasured"
@@ -58,6 +57,19 @@
       "budget": {"tier": "free", "unit": "requests/day", "note": ":free models only; OpenRouter's usage page is the spend view for every rung it fronts. Both ids completed a tool call at cost 0 on 2026-09-29; the old llama and gemini :free ids are gone."},
       "issued": "2026-09-20",
       "verify_at": "2026-09-29",
+      "status": "measured"
+    },
+    "openrouter-ultra": {
+      "provider": "openrouter",
+      "dialect": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "key_env": "OPENROUTER_API_KEY",
+      "models": {
+        "audit": "nvidia/nemotron-3-ultra-550b-a55b:free"
+      },
+      "budget": {"tier": "free", "unit": "requests/day", "note": "A second openrouter rung on a different upstream model, so one model's overload (B4871ED9: nemotron-3-super 200-carrying-503) does not end the audit. Tool call probed 2026-09-30 (Kart HL30MQY9), cost 0. gemma-4-31b-it:free was probed the same minute and answered 429 rate-limited upstream, so it is not a rung. Shares the openrouter account's daily :free request cap."},
+      "issued": "2026-09-30",
+      "verify_at": "2026-09-30",
       "status": "measured"
     },
     "gemini": {
@@ -122,7 +134,7 @@
   },
   "classes": {
     "build":     ["cerebras", "groq", "openrouter", "huggingface", "anthropic"],
-    "audit":     ["openrouter", "cerebras", "groq"],
+    "audit":     ["openrouter", "openrouter-ultra", "groq"],
     "research":  ["openrouter", "groq"],
     "operate":   ["groq", "ollama"],
     "witness":   ["groq", "ollama"],
@@ -133,7 +145,7 @@
   },
   "_classes_doc": [
     "Order within a class is the fall-through order. 'audit' keeps a cross-model rung above the builder's ladder on purpose: an audit on the same model family that built the thing is not an audit. Since 2026-09-29 build runs on qwen and audit on gpt-oss / nemotron; no audit model shares a family with a build model.",
-    "'audit' leads with openrouter, not groq: a woken seat's first turn (persona + tool definitions + brief) measured 13138 tokens on 2026-09-29, over groq's 8000 tokens-per-minute cap for any single request, so groq comes last. openrouter's nemotron is the one audit rung whose tool call was probed live (Kart 3XC64KCX); cerebras's gpt-oss-120b is listed in its catalog but was not probed, so it sits second.",
+    "'audit' leads with openrouter, not groq: a woken seat's first turn (persona + tool definitions + brief) measured 13138 tokens on 2026-09-29, over groq's 8000 tokens-per-minute cap for any single request, so groq comes last. Since 2026-09-30 the second audit rung is openrouter-ultra (nemotron-3-ultra, probed in Kart HL30MQY9): cerebras's gpt-oss-120b answered 402 payment_required on the first real audit (B4871ED9) and left the class. A router built by from_args also walks once more, after a pause, over the rungs that refused transiently (ratatosk.inference.TRANSIENT_KINDS).",
     "'audit' names no paid rung (pair a169d5ed, amending c9ca1a09 for seat audits): a rate limit steps to the next free provider, never to Opus. A paid audit is the operator's explicit ask, not a fall-through.",
     "Names match dispatch task_class / the envelope task classes (build-work-order -> build, auditor -> audit, librarian -> research, operator -> operate, witness -> witness).",
     "xAI/Grok is not a rung: console.x.ai went paid (operator, 2026-09-20)."
