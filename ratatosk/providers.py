@@ -89,6 +89,13 @@ class Request:
     messages: Sequence[Mapping[str, Any]]
     tools: Sequence[Mapping[str, Any]] = field(default_factory=list)
     max_tokens: int = MAX_TOKENS
+    #: The answer must be a call to this tool, named. A wake's last call
+    #: offers its closeout alone and names it here, so the model cannot answer
+    #: it with one more read (F1B1E935 called ``task_submit``, a tool it was
+    #: not offered, on the call that offered only the closeout). Named, not
+    #: ``"required"``: probed 2026-09-30 (Kart HZPL8REE), nemotron-3-ultra
+    #: ignored ``"required"`` (finish=stop, no call) and obeyed the named form.
+    force_tool: str | None = None
 
 
 # --- block helpers -----------------------------------------------------------
@@ -380,6 +387,11 @@ class OpenAICompatibleClient:
         }
         if request.tools:
             payload["tools"] = to_openai_tools(request.tools)
+            if request.force_tool:
+                payload["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": request.force_tool},
+                }
         started = time.monotonic()
         data = self._post(payload)
         latency = int((time.monotonic() - started) * 1000)
@@ -442,6 +454,9 @@ class AnthropicClient:
         sdk = self._sdk
         started = time.monotonic()
         text = ""
+        extra: dict = {}
+        if request.tools and request.force_tool:
+            extra["tool_choice"] = {"type": "tool", "name": request.force_tool}
         try:
             with self._client.messages.stream(
                 model=request.model,
@@ -449,6 +464,7 @@ class AnthropicClient:
                 system=request.system,
                 messages=list(request.messages),
                 tools=list(request.tools),
+                **extra,
             ) as stream:
                 for chunk in stream.text_stream:
                     if self._echo:

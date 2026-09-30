@@ -669,6 +669,7 @@ def _run_turn_bounded(
                     on_heartbeat()
                 last_heartbeat = now
         system, tools = state.system_prompt, state.all_tools
+        forced: dict = {}
         if (
             closeout_tool
             and max_iterations is not None
@@ -677,13 +678,20 @@ def _run_turn_bounded(
             only = [t for t in tools if t.get("name") == closeout_tool]
             if only:
                 system, tools = system + _last_call_note(closeout_tool), only
+                # F1B1E935: offered the closeout alone, the model still
+                # answered with task_submit. The provider is told to call the
+                # closeout by name, not just which tools exist.
+                forced = {"force_tool": closeout_tool}
                 with contextlib.suppress(Exception):
                     state.writer.write_system(
                         f"[budget] last model call: offered {closeout_tool} only"
                     )
+        offered = {t.get("name") for t in tools}
         iterations += 1
         try:
-            completion, receipt = inference.complete(system, state.history, tools)
+            completion, receipt = inference.complete(
+                system, state.history, tools, **forced
+            )
         except LadderRefused as exc:
             # The receipt is already inked (JSONL + Grove). The user turn stays
             # in history so the operator can fix the rung and retry.
@@ -770,6 +778,17 @@ def _run_turn_bounded(
                     print(f"  {note}", flush=True)
                     state.writer.write_system(note)
                     result = f"{tu['name']} was refused by the wake policy: {why}"
+            elif non_interactive and tu["name"] not in offered:
+                # A call to a tool this call did not offer is the model's
+                # invention, not a choice it was given (F1B1E935: task_submit
+                # on the call that offered only the closeout). Refused, never
+                # run — the seat sees the refusal like any other. The gated
+                # tools above keep the wake policy's own verdict.
+                note = f"[wake] {tu['name']} was not offered on this call — refused"
+                print(f"  {note}", flush=True)
+                with contextlib.suppress(Exception):
+                    state.writer.write_system(note)
+                result = f"{tu['name']} was not offered on this call; refused, not run."
             elif non_interactive:
                 try:
                     result = _tools.dispatch(

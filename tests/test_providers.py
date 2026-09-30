@@ -157,6 +157,37 @@ def test_complete_posts_chat_completions_and_reads_usage(monkeypatch):
     assert done.tokens_in == 12 and done.tokens_out == 3
     assert done.raw_model == "free-70b-0921"
     assert done.latency_ms >= 0
+    assert "tool_choice" not in seen["payload"], "the model chooses unless told"
+
+
+def _chat(monkeypatch, **request_kw):
+    seen = _serve(
+        monkeypatch,
+        {"choices": [{"message": {"role": "assistant", "content": "x"}}]},
+    )
+    client = OpenAICompatibleClient("https://free.example/v1", "sk-test")
+    client.complete(
+        Request(
+            model="m",
+            system="s",
+            messages=[{"role": "user", "content": "hi"}],
+            **request_kw,
+        )
+    )
+    return seen["payload"]
+
+
+def test_force_tool_names_the_tool_in_tool_choice(monkeypatch):
+    """F1B1E935: a wake's last call offered only the closeout and the model
+    answered with another read. Named, not "required": Kart HZPL8REE showed
+    nemotron-3-ultra ignore "required" and obey the named form."""
+    payload = _chat(monkeypatch, tools=[TOOL], force_tool="Read")
+    assert payload["tool_choice"] == {"type": "function", "function": {"name": "Read"}}
+
+
+def test_force_tool_with_no_tools_sends_no_tool_choice(monkeypatch):
+    payload = _chat(monkeypatch, tools=[], force_tool="Read")
+    assert "tool_choice" not in payload and "tools" not in payload
 
 
 def test_missing_usage_reads_as_none_not_zero(monkeypatch):
