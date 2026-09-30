@@ -59,10 +59,12 @@ class _Reader:
 
     def __init__(self):
         self.calls: list[tuple[str, list[str]]] = []
+        self.forced: list[str | None] = []
 
-    def complete(self, system, history, tools):
+    def complete(self, system, history, tools, *, force_tool=None):
         names = [t["name"] for t in tools]
         self.calls.append((system, names))
+        self.forced.append(force_tool)
         n = len(self.calls)
         if "task_submit" in names:
             return _tool_call("task_submit", {"task": f"git show {n}"}, n), _receipt()
@@ -190,3 +192,40 @@ def test_no_closeout_tool_in_the_definitions_means_no_restriction(
     assert "task_submit" in last_names
     assert "last model call" not in last_system
     assert "outcome=budget_turns" in line
+    assert model.forced == [None, None, None], "nothing to force"
+
+
+# -- F1B1E935: offered the closeout alone, the model read again anyway -------
+
+
+def test_the_last_call_forces_the_closeout_by_name(tmp_path, monkeypatch):
+    model = _Reader()
+    _wake(
+        monkeypatch, tmp_path, model, {"dispatch_id": "PKT00001", "status": "complete"}
+    )
+    assert model.forced == [None, None, HANDOFF]
+
+
+class _Stubborn(_Reader):
+    """The F1B1E935 shape: reads on the last call too, whatever it is offered."""
+
+    def complete(self, system, history, tools, *, force_tool=None):
+        self.calls.append((system, [t["name"] for t in tools]))
+        self.forced.append(force_tool)
+        n = len(self.calls)
+        return _tool_call("task_submit", {"task": f"git show {n}"}, n), _receipt()
+
+
+def test_a_call_to_a_tool_that_was_not_offered_is_refused_not_run(
+    tmp_path, monkeypatch
+):
+    model = _Stubborn()
+    line, dispatched, _ = _wake(
+        monkeypatch, tmp_path, model, {"dispatch_id": "PKT00001", "status": "complete"}
+    )
+    assert model.calls[-1][1] == [HANDOFF]
+    assert dispatched == ["task_submit", "task_submit"], (
+        "the third task_submit answered a call that offered only the closeout"
+    )
+    assert "outcome=budget_turns" in line
+    assert "handoff=left_working" in line

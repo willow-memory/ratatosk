@@ -221,7 +221,9 @@ class InferenceRouter:
 
     # -- the walk ----------------------------------------------------------
 
-    def complete(self, system: str, messages, tools) -> tuple[Completion, TurnReceipt]:
+    def complete(
+        self, system: str, messages, tools, *, force_tool: str | None = None
+    ) -> tuple[Completion, TurnReceipt]:
         usable = self.resolution.usable
         skipped = [
             TrailStep(v.rung.name, v.model, v.status, v.reason)
@@ -253,7 +255,11 @@ class InferenceRouter:
             for index, verdict in pending:
                 model = verdict.model or ""
                 request = Request(
-                    model=model, system=system, messages=messages, tools=tools
+                    model=model,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    force_tool=force_tool,
                 )
                 try:
                     client = self._client(verdict)
