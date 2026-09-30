@@ -592,6 +592,7 @@ def _run_turn_bounded(
     heartbeat_interval: float = 30.0,
     wake_policy: _wake_policy.WakePolicy | None = None,
     worktree_root: str | None = None,
+    closeout_tool: str | None = None,
 ) -> str:
     """The turn loop, with an optional cap on model-call iterations and an
     optional wall-clock deadline (a ``time.monotonic()`` timestamp).
@@ -626,6 +627,14 @@ def _run_turn_bounded(
     Loki 3564BE3C F4). A budget refusal is inked to the transcript
     (``write_system``) the same way a ladder refusal is — never silent,
     never a raise.
+
+    ``closeout_tool`` (a woken seat's, from ``session_enter``): the last call
+    under ``max_iterations`` is offered that tool alone, with a note in the
+    system prompt that it is the last call; and a call to it that the broker
+    accepts ends the loop ``"ok"`` — the packet is closed, and every further
+    call would be spent on a finished wake. 2026-09-30, D9148C42: the seat
+    spent all eight calls reading and ended ``budget_turns`` with its verdict
+    still unwritten.
     """
     state.writer.write_user(user_input)
     state.history.append({"role": "user", "content": user_input})
@@ -659,11 +668,22 @@ def _run_turn_bounded(
                 with contextlib.suppress(Exception):
                     on_heartbeat()
                 last_heartbeat = now
+        system, tools = state.system_prompt, state.all_tools
+        if (
+            closeout_tool
+            and max_iterations is not None
+            and iterations == max_iterations - 1
+        ):
+            only = [t for t in tools if t.get("name") == closeout_tool]
+            if only:
+                system, tools = system + _last_call_note(closeout_tool), only
+                with contextlib.suppress(Exception):
+                    state.writer.write_system(
+                        f"[budget] last model call: offered {closeout_tool} only"
+                    )
         iterations += 1
         try:
-            completion, receipt = inference.complete(
-                state.system_prompt, state.history, state.all_tools
-            )
+            completion, receipt = inference.complete(system, state.history, tools)
         except LadderRefused as exc:
             # The receipt is already inked (JSONL + Grove). The user turn stays
             # in history so the operator can fix the rung and retry.
@@ -708,6 +728,7 @@ def _run_turn_bounded(
             return "ok"
 
         tool_results = []
+        closed = False
         for tu in tool_uses:
             if non_interactive:
                 tu = _pin_seat_app_id(state, tu)
@@ -800,6 +821,13 @@ def _run_turn_bounded(
                     policy_store=state.policy,
                     hook_runtime=state.hooks,
                 )
+            if (
+                closeout_tool
+                and non_interactive
+                and tu["name"] == closeout_tool
+                and not _seat.decode_result(result).get("error")
+            ):
+                closed = True
             if non_interactive:
                 if tu["name"] == "task_submit":
                     result = _await_kart(state, result, deadline)
@@ -813,6 +841,17 @@ def _run_turn_bounded(
                 {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
             )
         state.history.append({"role": "user", "content": tool_results})
+        if closed:
+            return "ok"
+
+
+def _last_call_note(closeout_tool: str) -> str:
+    """Appended to the system prompt for a wake's last model call."""
+    return (
+        "\n\n[budget] This is your last model call. Close the packet now with "
+        f"{closeout_tool}, from what you have already read: findings ranked, "
+        "most severe first, and name in the narrative what you did not reach."
+    )
 
 
 def _wake_identity_line(entry) -> str:
@@ -1285,6 +1324,7 @@ def run_wake(
                 heartbeat_interval=heartbeat_interval,
                 wake_policy=entry.wake_policy,
                 worktree_root=_worktree_from_assignment(entry.assignment),
+                closeout_tool=entry.closeout_tool if entry.dispatch_id else None,
             )
         except LadderError as exc:
             outcome = f"refused: ladder unusable for class={task_class}: {exc}"
