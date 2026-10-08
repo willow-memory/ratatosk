@@ -1549,6 +1549,13 @@ def _shutdown(state: RuntimeState) -> None:
 
 
 def main() -> None:
+    # `--onescript` is a different program sharing this entry point: no MCP, no
+    # Grove, no session, no hooks, no CLAUDE.md. It is handed off before
+    # anything below can run, so none of that can start by accident.
+    if "--onescript" in sys.argv[1:]:
+        from ratatosk import onescript
+
+        raise SystemExit(onescript.main(sys.argv[1:]))
     parser = argparse.ArgumentParser(
         description="Ratatosk — Willow platform session runtime"
     )
@@ -1585,6 +1592,14 @@ def main() -> None:
         "--mcp", action="store_true", help="Connect to willow-mcp via stdio"
     )
     parser.add_argument("--local", action="store_true", help="Route to local Ollama")
+    parser.add_argument(
+        "--onescript",
+        action="store_true",
+        help=(
+            'The one script\'s model seat: --served FILE --out FILE "<task>" '
+            "(handled before this parser; see README)"
+        ),
+    )
     parser.add_argument(
         "--listen", action="store_true", help="Run Grove bus listener (requires --mcp)"
     )
