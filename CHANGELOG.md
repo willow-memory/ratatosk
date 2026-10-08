@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.15.0](https://github.com/willow-memory/ratatosk/compare/v1.14.0...v1.15.0) (2026-10-08)
+
+
+### Added
+
+* **crown:** frame every turn with turn_open/turn_close ([dba3667](https://github.com/willow-memory/ratatosk/commit/dba3667e867fbe0af8709f83337e41bb23aea0e0))
+* **session:** one-script part 3 — stamp, turn frame, pile pointers, version stamp ([#83](https://github.com/willow-memory/ratatosk/issues/83)) ([948458c](https://github.com/willow-memory/ratatosk/commit/948458c68f1cb82d4e43f6e1c58d4359497216fd))
+* **session:** stamp every row, frame turns, pile pointers, version stamp ([3a36c7d](https://github.com/willow-memory/ratatosk/commit/3a36c7d1378b1c60d314f46a5c7520b75daa8f15))
+
 ## [1.14.0](https://github.com/willow-memory/ratatosk/compare/v1.13.0...v1.14.0) (2026-10-08)
 
 
