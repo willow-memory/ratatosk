@@ -450,7 +450,13 @@ def test_run_turn_reports_a_refusal_and_keeps_the_session(
 
     assert "[ladder] a (auth): bad key" in capsys.readouterr().out
     entries = state.writer.read_entries()
-    assert [e["type"] for e in entries] == ["user", "receipt", "system"]
+    assert [e["type"] for e in entries] == [
+        "turn_open",
+        "user",
+        "receipt",
+        "system",
+        "turn_close",
+    ]
     assert state.history == [{"role": "user", "content": "go"}]
 
 
@@ -477,9 +483,11 @@ def test_an_empty_answer_never_enters_history(tmp_path, monkeypatch, capsys, blo
 
     assert state.history == [{"role": "user", "content": "go"}]
     assert [e["type"] for e in state.writer.read_entries()] == [
+        "turn_open",
         "user",
         "receipt",
         "system",
+        "turn_close",
     ]
     assert "[empty answer] a returned no content" in capsys.readouterr().out
 
@@ -494,7 +502,9 @@ def test_a_client_crash_inside_run_turn_is_reported_not_raised(
 
     assert "[ladder] a (crash): ValueError: no json" in capsys.readouterr().out
     assert [e["type"] for e in state.writer.read_entries()] == [
+        "turn_open",
         "user",
         "receipt",
         "system",
+        "turn_close",
     ]
