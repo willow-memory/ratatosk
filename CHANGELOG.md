@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.14.0](https://github.com/willow-memory/ratatosk/compare/v1.13.0...v1.14.0) (2026-10-08)
+
+
+### Added
+
+* **onescript:** escalate by proposing the reason; silent end; one nudge ([049a39b](https://github.com/willow-memory/ratatosk/commit/049a39b59da9916e040053e65b0ac7745e4a1d1a))
+* **onescript:** escalate by proposing the reason; silent end; one nudge ([#81](https://github.com/willow-memory/ratatosk/issues/81)) ([e7cb0d9](https://github.com/willow-memory/ratatosk/commit/e7cb0d987b981f3a8517fe879e14dbf92e193caf))
+
 ## [1.13.0](https://github.com/willow-memory/ratatosk/compare/v1.12.8...v1.13.0) (2026-10-08)
 
 
