@@ -155,7 +155,6 @@ def test_a_hard_crash_leaves_exactly_one_open_turn(tmp_path):
                 os._exit(7)
 
         w = S.SessionWriter(cwd={str(tmp_path)!r}, who="hanuman")
-        print(w.path)
         state = RuntimeState(
             args=argparse.Namespace(trust=True), model="s", writer=w, history=[],
             system_prompt="t", all_tools=[], mcp_names=set(), mcp_call=None,
@@ -179,7 +178,11 @@ def test_a_hard_crash_leaves_exactly_one_open_turn(tmp_path):
         check=False,
     )
     assert proc.returncode == 7, proc.stderr
-    path = Path(proc.stdout.strip().splitlines()[0])
+    # os._exit flushes no stdio, so a block-buffered pipe (CI) loses anything
+    # the child printed: find the transcript on disk instead.
+    found = sorted(sessions.glob("*.jsonl"))
+    assert len(found) == 1, found
+    path = found[0]
     rows = [json.loads(line) for line in path.read_text().splitlines() if line]
     opens = [r for r in rows if r["type"] == "turn_open"]
     closes = [r for r in rows if r["type"] == "turn_close"]
