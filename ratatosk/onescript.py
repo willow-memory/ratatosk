@@ -49,6 +49,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -215,6 +216,22 @@ def served_budget(ctx: int, task: str) -> int:
     return ctx - fixed - answer_reserve(ctx)
 
 
+def prompt_tokens(messages: list[dict]) -> int:
+    """Estimated tokens of the whole request but for the answer's reserve:
+    system prompt, tool schema, and every message so far (tool calls and
+    results included)."""
+    total = est_tokens(SYSTEM_PROMPT) + est_tokens(json.dumps(TOOLS))
+    for m in messages:
+        content = m.get("content")
+        text = (
+            content
+            if isinstance(content, str)
+            else json.dumps(content, ensure_ascii=False, default=str)
+        )
+        total += est_tokens(text) + MSG_OVERHEAD_TOKENS
+    return total
+
+
 def render_served(doc: dict, budget: int) -> tuple[str, str]:
     """(state, user-turn text): the block, or `empty` when it doesn't fit.
 
@@ -249,6 +266,11 @@ def choose_rung(
     ladder: Ladder, model: str | None = None, rung_name: str | None = None
 ) -> tuple[Rung, str]:
     """The local rung and model to use, or `OneScriptRefused` naming why not."""
+    if model and is_cloud_model_name(model):
+        raise OneScriptRefused(
+            f"--model {model} is a cloud model (Ollama cloud); "
+            "--onescript runs local rungs only"
+        )
     if model and model_dialect(model) == "anthropic":
         raise OneScriptRefused(
             f"--model {model} is a cloud model; --onescript runs local rungs only"
@@ -294,10 +316,30 @@ def choose_rung(
     chosen = rung.model_for("chat") or next(iter(rung.models.values()), "")
     if not chosen:
         raise OneScriptRefused(f"rung {rung.name} lists no model; pass --model")
+    if is_cloud_model_name(chosen):
+        raise OneScriptRefused(
+            f"model {chosen} is a cloud model (Ollama cloud); "
+            "--onescript runs local rungs only"
+        )
     return rung, chosen
 
 
 # --- context window ----------------------------------------------------------
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A loopback server may not send this mode's request anywhere else."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+#: Every request this mode makes goes through this opener. ``ProxyHandler({})``
+#: means no proxy at all, whatever ``http_proxy``/``HTTPS_PROXY`` say, so no
+#: environment can route a request off the loopback rung (Loki 0C6FAFBF F1).
+#: ``providers.py`` stays as it is for Rat's other modes; this is mode-local.
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def _http_json(
@@ -310,8 +352,59 @@ def _http_json(
         headers={"Content-Type": "application/json", **(headers or {})},
         method="POST" if data is not None else "GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _opener().open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+class LocalOpenAIClient(OpenAICompatibleClient):
+    """The OpenAI-compatible client, sending only through the no-proxy opener."""
+
+    def _open(self, req):
+        return _opener().open(req, timeout=self.timeout)
+
+
+def list_models(rung: Rung, *, timeout: float = 3.0) -> list[str] | None:
+    """The model names the rung itself lists; None when it won't say.
+
+    Ollama: `/api/tags` (an entry that points at a remote host is a cloud
+    model and is left out). OpenAI-compatible: `/v1/models`.
+    """
+    base = rung.base_url.rstrip("/")
+    try:
+        if rung.dialect == "ollama":
+            info = _http_json(f"{base}/api/tags", None, timeout)
+            out = []
+            for m in info.get("models") or []:
+                if not isinstance(m, dict) or m.get("remote_host"):
+                    continue
+                for key in ("name", "model"):
+                    if isinstance(m.get(key), str):
+                        out.append(m[key])
+            return out
+        url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+        headers = {}
+        key = os.environ.get(rung.key_env or "", "")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        info = _http_json(url, None, timeout, headers=headers)
+        return [
+            m["id"]
+            for m in info.get("data") or []
+            if isinstance(m, dict) and isinstance(m.get("id"), str)
+        ]
+    except Exception:
+        return None
+
+
+def is_cloud_model_name(model: str) -> bool:
+    """Ollama's hosted models are named `…-cloud` or `…:cloud`."""
+    m = model.strip().lower()
+    return m.endswith(("-cloud", ":cloud"))
+
+
+def _listed(model: str, names: list[str]) -> bool:
+    have = set(names)
+    return model in have or (":" not in model and f"{model}:latest" in have)
 
 
 def probe_ctx(rung: Rung, model: str, *, timeout: float = 3.0) -> int | None:
@@ -506,10 +599,28 @@ def default_client(
     env = os.environ if env is None else env
     if rung.dialect == "ollama":
         return OllamaToolClient(rung.base_url, ctx)
-    return OpenAICompatibleClient(rung.base_url, env.get(rung.key_env or "", ""))
+    # llama.cpp fixes its window when the server starts and has no per-request
+    # setting for it; run() therefore sized the budget from what it reports.
+    return LocalOpenAIClient(rung.base_url, env.get(rung.key_env or "", ""))
 
 
 # --- propose: the one tool ---------------------------------------------------
+
+
+def plain_relative_path(path: str) -> bool:
+    """True only for a plain relative POSIX path, judged as written.
+
+    Nothing is normalized or decoded first: no leading/trailing whitespace, no
+    control characters, no `~`, no `%`, no backslash, no drive letter, no `..`
+    or empty segment (an empty segment is a leading, trailing or doubled `/`).
+    """
+    if not path or len(path) > MAX_PATH or path != path.strip():
+        return False
+    if any(unicodedata.category(c).startswith("C") for c in path):
+        return False
+    if any(c in path for c in ("~", "%", "\\")) or _WIN_DRIVE.match(path):
+        return False
+    return all(seg not in ("", "..") for seg in path.split("/"))
 
 
 def validate_proposal(args: object) -> tuple[dict | None, str]:
@@ -526,14 +637,8 @@ def validate_proposal(args: object) -> tuple[dict | None, str]:
     )
     if not isinstance(path, str) or not path.strip():
         return None, "path must be a non-empty string"
-    if (
-        len(path) > MAX_PATH
-        or "\x00" in path
-        or path.startswith(("/", "\\"))
-        or _WIN_DRIVE.match(path)
-        or ".." in path.replace("\\", "/").split("/")
-    ):
-        return None, "path must be a short relative name, with no '..'"
+    if not plain_relative_path(path):
+        return None, "path must be a short, plain relative POSIX name, with no '..'"
     if not isinstance(data, str) or len(data) > MAX_DATA:
         return None, f"data must be a string of at most {MAX_DATA} characters"
     if (
@@ -604,6 +709,13 @@ def run_loop(
         if remaining <= 0:
             result.end_reason = "wall_clock"
             break
+        # Before every request, not only the first: the whole prompt as it
+        # will be sent, plus the answer's reserve, must fit the window. If it
+        # won't, stop here; the server is never left to truncate.
+        if prompt_tokens(messages) + answer_reserve(ctx) > ctx:
+            result.end_reason = "ctx_full"
+            log.append({"role": "error", "text": "the next request would overflow ctx"})
+            break
         if hasattr(client, "timeout"):
             client.timeout = remaining
         request = Request(
@@ -637,6 +749,12 @@ def run_loop(
             name = use.get("name")
             if name != "propose":
                 note = f"refused: no tool named {name!r}; the only tool is propose"
+                log.append({"role": "refused", "tool": name, "text": note})
+            elif result.state != "populated":
+                note = (
+                    f"refused: the served block is {result.state}; "
+                    "there is nothing to propose from"
+                )
                 log.append({"role": "refused", "tool": name, "text": note})
             elif result.proposals >= MAX_PROPOSALS:
                 note = f"refused: at most {MAX_PROPOSALS} proposals per run"
@@ -693,6 +811,7 @@ def run(
     ladder: Ladder | None = None,
     client_factory: ClientFactory | None = None,
     ctx_probe: Callable[[Rung, str], int | None] | None = None,
+    model_lister: Callable[[Rung], list[str] | None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     stdout=None,
     stderr=None,
@@ -714,10 +833,31 @@ def run(
             raise OneScriptRefused(str(exc)) from None
         rung, model = choose_rung(ladder, args.model, args.rung)
 
+        # The model must be one the local rung itself lists: a cloud model an
+        # Ollama daemon proxies, or a name the rung doesn't know, is refused
+        # here, before any chat request.
+        names = (model_lister or list_models)(rung)
+        if names is None:
+            raise OneScriptRefused(
+                f"rung {rung.name} didn't list its models; can't confirm "
+                f"{model} is local"
+            )
+        if not _listed(model, names):
+            raise OneScriptRefused(
+                f"model {model} is not listed by local rung {rung.name}"
+            )
+
+        # llama.cpp fixes its window at server start and takes none per
+        # request, so on that path the window the server reports bounds the
+        # flag; Ollama is sent the window (num_ctx) the budget was sized for.
+        probed = None
+        if args.ctx is None or rung.dialect == "openai":
+            probed = (ctx_probe or probe_ctx)(rung, model)
         if args.ctx is not None:
             ctx, source = args.ctx, "flag"
+            if rung.dialect == "openai" and probed and probed < args.ctx:
+                ctx, source = probed, "rung"
         else:
-            probed = (ctx_probe or probe_ctx)(rung, model)
             ctx, source = (probed, "rung") if probed else (DEFAULT_CTX, "default")
 
         budget = served_budget(ctx, task)
@@ -735,6 +875,8 @@ def run(
         out_dir = os.path.dirname(os.path.abspath(args.out))
         if not os.path.isdir(out_dir):
             raise OneScriptRefused("--out is in a directory that doesn't exist")
+        if os.path.isdir(args.out):
+            raise OneScriptRefused("--out is a directory; give a file to append to")
         if (
             os.path.exists(args.out)
             and os.path.exists(args.served)

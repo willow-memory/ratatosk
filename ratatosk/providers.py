@@ -298,6 +298,11 @@ class OpenAICompatibleClient:
         self._api_key = api_key
         self.timeout = timeout
 
+    def _open(self, req: urllib.request.Request):
+        """The one place a request leaves; a mode with its own rules (a
+        local-only opener) overrides this and nothing else."""
+        return urllib.request.urlopen(req, timeout=self.timeout)
+
     def _post(self, payload: dict) -> dict:
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -310,7 +315,7 @@ class OpenAICompatibleClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._open(req) as resp:
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             body = ""

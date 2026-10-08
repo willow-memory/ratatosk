@@ -70,6 +70,19 @@ CLOUD_ONLY = {
 }
 
 
+REAL_LIST_MODELS = os_mod.list_models
+
+
+@pytest.fixture(autouse=True)
+def _rung_lists_its_models(monkeypatch):
+    """Every test's local rung lists the models the ladder names for it."""
+    monkeypatch.setattr(
+        os_mod,
+        "list_models",
+        lambda rung, **k: [*rung.models.values(), "qwen2.5:0.5b"],
+    )
+
+
 def ladder(data=LADDER):
     return parse_ladder(data)
 
@@ -376,6 +389,10 @@ def test_the_proposals_file_exists_even_when_nothing_is_proposed(box):
         {"path": "C:\\Windows\\x"},
         {"path": ""},
         {"path": "x\x00y"},
+        {"path": " /etc/passwd"},
+        {"path": "\t/abs"},
+        {"path": "~/.bashrc"},
+        {"path": "%2e%2e/x"},
         {"cites": "id00"},
         {"cites": [1]},
         {"claim": ""},
@@ -753,3 +770,357 @@ def test_an_ollama_that_is_down_is_a_transport_end(box):
         client_factory=lambda r, m, c: os_mod.OllamaToolClient(rung.base_url, c),
     )
     assert code == 1 and result.end_reason.startswith("provider_error:")
+
+
+# --- rework per Loki 0C6FAFBF -------------------------------------------------
+
+
+def _rung(url, dialect="ollama", key_env=None):
+    from ratatosk.ladder import Rung
+
+    return Rung("r", dialect, dialect, url, key_env, {}, None, "unmeasured")
+
+
+class _Routes(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _go(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        self.server.seen.append((self.command, self.path))
+        route = self.server.routes.get(self.path)
+        if route is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if isinstance(route, tuple):  # ("redirect", url)
+            self.send_response(302)
+            self.send_header("Location", route[1])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        data = json.dumps(route).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_GET = do_POST = _go
+
+
+@pytest.fixture
+def serve():
+    servers = []
+
+    def make(routes):
+        srv = HTTPServer(("127.0.0.1", 0), _Routes)
+        srv.routes, srv.seen = routes, []
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        servers.append(srv)
+        return f"http://127.0.0.1:{srv.server_port}", srv.seen
+
+    yield make
+    for s in servers:
+        s.shutdown()
+        s.server_close()
+
+
+OLLAMA_ROUTES = {
+    "/api/tags": {"models": [{"name": "gemma3:4b"}]},
+    "/api/show": {"parameters": "num_ctx 6144"},
+    "/api/chat": {
+        "model": "gemma3:4b",
+        "message": {"role": "assistant", "content": "k"},
+    },
+    "/props": {"default_generation_settings": {"n_ctx": 8192}},
+    "/v1/models": {"data": [{"id": "local-gguf"}]},
+    "/v1/chat/completions": {
+        "choices": [{"message": {"role": "assistant", "content": "k"}}]
+    },
+}
+REQ = Request("gemma3:4b", "S", [{"role": "user", "content": "U"}], os_mod.TOOLS, 100)
+
+
+# F1: no environment can route a request off the loopback rung
+
+
+def test_a_proxy_in_the_environment_does_not_carry_any_request(serve, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    target, tseen = serve(OLLAMA_ROUTES)
+    proxy, pseen = serve({})
+    for var in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.setenv(var, proxy)
+    for var in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+    # control: plain urlopen on this box does follow the environment proxy
+    with pytest.raises(urllib.error.HTTPError):
+        urllib.request.urlopen(f"{target}/api/tags", timeout=5)
+    assert pseen, "the control request should have gone to the proxy"
+    pseen.clear()
+    tseen.clear()
+
+    ollama, llama = _rung(target), _rung(target, "openai")
+    assert os_mod.probe_ctx(ollama, "m") == 6144
+    assert REAL_LIST_MODELS(ollama) == ["gemma3:4b"]
+    assert os_mod.OllamaToolClient(target, 3000).complete(REQ).text == "k"
+    assert os_mod.probe_ctx(llama, "m") == 8192
+    assert REAL_LIST_MODELS(_rung(f"{target}/v1", "openai")) == ["local-gguf"]
+    c = os_mod.default_client(_rung(f"{target}/v1", "openai"), "m", 4096, env={})
+    assert c.complete(REQ).text == "k"
+    assert pseen == [], "a request went to the environment proxy"
+    assert len(tseen) == 6
+
+
+def test_a_loopback_redirect_is_not_followed(serve):
+    other, oseen = serve(OLLAMA_ROUTES)
+    target, _t = serve({"/api/tags": ("redirect", f"{other}/api/tags")})
+    assert REAL_LIST_MODELS(_rung(target)) is None
+    assert oseen == []
+
+
+# F2: a cloud model is not local, even when the daemon on loopback lists it
+
+
+@pytest.mark.parametrize(
+    "model", ["gpt-oss:120b-cloud", "kimi-k2:1t-cloud", "qwen3-coder:cloud"]
+)
+def test_an_ollama_cloud_model_is_refused_even_when_listed(
+    box, capsys, monkeypatch, model
+):
+    monkeypatch.setattr(os_mod, "list_models", lambda rung, **k: [model])
+    err = refused(box, ["--model", model], capsys=capsys)
+    assert "cloud model" in err
+
+
+def test_a_cloud_default_model_on_a_local_rung_is_refused(box, capsys):
+    data = json.loads(json.dumps(LADDER))
+    data["rungs"]["ollama"]["models"]["chat"] = "gpt-oss:120b-cloud"
+    err = refused(box, ["--rung", "ollama"], led=parse_ladder(data), capsys=capsys)
+    assert "cloud model" in err
+
+
+def test_a_model_the_local_rung_does_not_list_is_refused(box, capsys, monkeypatch):
+    monkeypatch.setattr(os_mod, "list_models", lambda rung, **k: ["gemma3:4b"])
+    err = refused(box, ["--model", "mystery:7b"], capsys=capsys)
+    assert "not listed by local rung ollama" in err
+
+
+def test_a_rung_that_will_not_list_its_models_is_refused(box, capsys, monkeypatch):
+    monkeypatch.setattr(os_mod, "list_models", lambda rung, **k: None)
+    err = refused(box, [], capsys=capsys)
+    assert "didn't list its models" in err
+
+
+def test_a_listed_model_without_its_tag_matches_latest(box):
+
+    def os_mod_list(rung, **k):
+        return ["gemma3:latest"]
+
+    code, result = os_mod.run(
+        [
+            "--onescript",
+            "--served",
+            str(box[1]),
+            "--out",
+            str(box[2]),
+            "--ctx",
+            "4096",
+            "--model",
+            "gemma3",
+            "t",
+        ],
+        ladder=ladder(),
+        client_factory=lambda *a: Stub([[]]),
+        model_lister=os_mod_list,
+    )
+    assert code == 0 and result.model == "gemma3"
+
+
+def test_list_models_leaves_out_remote_ollama_entries(serve):
+    url, _s = serve(
+        {
+            "/api/tags": {
+                "models": [
+                    {"name": "gemma3:4b"},
+                    {"name": "gpt-oss:120b-cloud", "remote_host": "https://x"},
+                ]
+            }
+        }
+    )
+    assert REAL_LIST_MODELS(_rung(url)) == ["gemma3:4b"]
+    assert REAL_LIST_MODELS(_rung("http://127.0.0.1:9"), timeout=1.0) is None
+
+
+# F3: every request is measured whole; overflow ends the run
+
+
+def _run_ctx(box, script, ctx, probe=lambda rung, model: None, extra=()):
+    stub = Stub(script)
+    code, result = os_mod.run(
+        [
+            "--onescript",
+            "--served",
+            str(box[1]),
+            "--out",
+            str(box[2]),
+            "--ctx",
+            str(ctx),
+            *extra,
+            "summarize the stack",
+        ],
+        ladder=ladder(),
+        client_factory=lambda *a: stub,
+        ctx_probe=probe,
+    )
+    return code, result, stub
+
+
+def test_a_second_turn_that_would_overflow_ends_ctx_full(box):
+    big = good(data="x" * 3000)
+    code, result, stub = _run_ctx(box, [[big], [good("b.md")], []], 2048)
+    assert code == 1 and result.end_reason == "ctx_full"
+    assert len(stub.requests) == 1  # the overflowing request was never sent
+    assert result.proposals == 1
+    assert len(box[2].read_text().splitlines()) == 1
+
+
+def test_every_sent_request_fits_the_window_with_the_answer_reserve(box):
+    small = [[good(f"p{i}.md", data="y" * 200)] for i in range(12)]
+    sizes = []
+
+    class Measuring(Stub):
+        def complete(self, request):
+            sizes.append(os_mod.prompt_tokens(list(request.messages)))
+            return super().complete(request)
+
+    _code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(box[2]),
+         "--ctx", "2048", "--max-turns", "12", "t"],
+        ladder=ladder(),
+        client_factory=lambda *a: Measuring(small),
+        ctx_probe=lambda r, m: None,
+    )  # fmt: skip
+    assert len(sizes) >= 2 and result.end_reason == "ctx_full"
+    assert all(s + os_mod.answer_reserve(2048) <= 2048 for s in sizes)
+
+
+def test_prompt_tokens_counts_tool_calls_and_results():
+    one = [{"role": "user", "content": "hello"}]
+    more = [
+        *one,
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "a",
+                    "name": "propose",
+                    "input": {"data": "z" * 900},
+                }
+            ],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
+    ]
+    assert os_mod.prompt_tokens(more) - os_mod.prompt_tokens(one) > 300
+
+
+def test_llamacpp_uses_the_window_the_server_reports(box):
+    led = ladder()
+    for flag, probe, want in (
+        (4096, 3000, (3000, "rung")),
+        (4096, None, (4096, "flag")),
+        (2048, 8192, (2048, "flag")),
+    ):
+        _code, result = os_mod.run(
+            [
+                "--onescript",
+                "--served",
+                str(box[1]),
+                "--out",
+                str(box[2]),
+                "--ctx",
+                str(flag),
+                "--rung",
+                "llamacpp",
+                "t",
+            ],
+            ladder=led,
+            client_factory=lambda *a: Stub([[]]),
+            ctx_probe=lambda r, m, p=probe: p,
+        )
+        assert (result.ctx, result.ctx_source) == want
+
+
+def test_ollama_is_sent_the_flag_window_not_the_probe(box):
+    _c, result, _s = _run_ctx(box, [[]], 4096, probe=lambda r, m: 2000)
+    assert (result.ctx, result.ctx_source) == (4096, "flag")
+
+
+# F4: a plain relative POSIX path, judged as written
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        " /etc/passwd", "\t/abs", "~/.bashrc", "%2e%2e/x", "a\\b", "a//b",
+        "a/", "/a", "a/b ", " a/b", "a\nb", "a/../b", "..", "a/..", "a\u202eb",
+        "a\x7fb", "C:/x", "~", "a%20b", "",
+    ],
+)  # fmt: skip
+def test_a_path_that_is_not_plain_relative_posix_is_refused(path):
+    assert os_mod.plain_relative_path(path) is False
+    row, why = os_mod.validate_proposal(
+        {"path": path, "data": "d", "cites": ["id00"], "claim": "c"}
+    )
+    assert row is None and why
+
+
+@pytest.mark.parametrize(
+    "path", ["a.md", "notes/summary.md", "a b/c.md", "a.b/c-d_e.md", "x/.hidden"]
+)
+def test_a_plain_relative_path_is_accepted(path):
+    assert os_mod.plain_relative_path(path) is True
+
+
+# F5 / extra
+
+
+def test_out_that_is_a_directory_is_refused(box, tmp_path, capsys):
+    d = tmp_path / "outdir"
+    d.mkdir()
+    called = []
+    code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(d), "t"],
+        ladder=ladder(),
+        client_factory=lambda *a: called.append(1),
+        ctx_probe=lambda *a: None,
+    )
+    assert code == 2 and result is None and not called
+    assert "directory" in capsys.readouterr().err
+    assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"state": "empty", "why": "no scope", "tables": []},
+        {"state": "unreachable", "why": "down", "tables": []},
+    ],
+)
+def test_propose_is_refused_when_the_served_state_is_not_populated(box, doc):
+    _tmp, _served, out = box
+    _c, result, stub = go(box, [[good()], []], doc=doc)
+    assert result.proposals == 0 and out.read_text() == ""
+    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    assert handed_back.startswith("refused:") and doc["state"] in handed_back
+
+
+def test_propose_is_refused_when_the_block_was_replaced_by_empty(box):
+    big = served_doc(n_tables=40, text="MARKER-ROW-" + "x" * 80)
+    _c, result, _s = go(box, [[good()], []], doc=big)
+    assert result.state == "empty" and result.proposals == 0
