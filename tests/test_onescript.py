@@ -221,7 +221,7 @@ def test_the_summary_line_does_not_carry_the_path(box, capsys):
     go(box, [[]])
     line = capsys.readouterr().out
     assert line.startswith("[onescript] model=gemma3:4b rung=ollama ctx=4096 (flag)")
-    assert "served=populated proposals=0 turns=1 end=done" in line
+    assert "served=populated proposals=0 turns=1 end=silent escalated=0" in line
     assert served.parent.name not in line
 
 
@@ -1263,3 +1263,247 @@ def test_propose_is_refused_when_the_block_was_replaced_by_empty(box):
     big = served_doc(n_tables=40, text="MARKER-ROW-" + "x" * 80)
     _c, result, _s = go(box, [[good()], []], doc=big)
     assert result.state == "empty" and result.proposals == 0
+
+
+# --- escalate: one piece, or propose the reason (bite B) -----------------------
+
+
+def esc(claim="the piece shows no verdicts", cites=("id00",), **over):
+    cites = cites if isinstance(cites, str) else list(cites)
+    base = {"path": "ESCALATE", "data": "", "cites": cites, "claim": claim}
+    base.update(over)
+    return call("propose", **base)
+
+
+def rows(out):
+    return [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+
+
+def test_the_model_is_told_how_to_escalate(box):
+    _c, _r, stub = go(box, [[]], task="count the seals")
+    req = stub.requests[0]
+    user = req.messages[0]["content"]
+    for text in (req.system, req.tools[0]["description"], user):
+        assert "ESCALATE" in text
+    assert "never a failure" in req.system and "reason" in req.system
+    assert user.endswith(os_mod.TASK_TAIL)
+    assert user.index("Task: count the seals") < user.index(os_mod.TASK_TAIL)
+    assert (
+        "ESCALATE" in req.tools[0]["input_schema"]["properties"]["path"]["description"]
+    )
+
+
+def test_the_exact_prompt_fits_the_phone_window():
+    assert os_mod.served_budget(4096, "t") > 1500  # room is left for a real piece
+
+
+def test_an_escalation_row_is_accepted_and_ends_the_turn(box):
+    _tmp, _served, out = box
+    code, result, stub = go(box, [[esc()], [good()], []])
+    assert code == 0
+    assert (result.end_reason, result.escalated, result.proposals) == (
+        "escalated",
+        1,
+        0,
+    )
+    assert len(stub.requests) == 1  # no turn after the escalation
+    assert rows(out) == [
+        {
+            "path": "ESCALATE",
+            "data": "",
+            "cites": ["id00"],
+            "claim": "the piece shows no verdicts",
+        }
+    ]
+
+
+def test_no_row_follows_an_escalation_in_the_same_reply(box):
+    _tmp, _served, out = box
+    _c, result, _s = go(box, [[esc(), good("late.md")], []])
+    assert result.escalated == 1 and result.proposals == 0
+    assert [r["path"] for r in rows(out)] == ["ESCALATE"]
+
+
+def test_rows_before_the_escalation_stay_and_it_is_one_escalation(box):
+    _tmp, _served, out = box
+    _c, result, _s = go(box, [[good("a.md"), esc(), esc("again")], []])
+    assert (result.proposals, result.escalated) == (1, 1)
+    assert [r["path"] for r in rows(out)] == ["a.md", "ESCALATE"]
+
+
+def test_an_escalation_needs_its_reason(box):
+    _tmp, _served, out = box
+    for claim in ("", "   "):
+        _c, result, stub = go(box, [[esc(claim=claim)], []])
+        assert result.escalated == 0 and out.read_text() == ""
+        assert result.end_reason == "silent"
+        handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+        assert handed_back.startswith("refused:") and "reason" in handed_back
+
+
+def test_an_escalation_may_cite_nothing_but_not_junk(box):
+    _tmp, _served, out = box
+    _c, result, _s = go(box, [[esc(cites=())], []])
+    assert result.escalated == 1 and rows(out)[0]["cites"] == []
+    out.write_text("")
+    _c, result, _s = go(box, [[esc(cites="id00")], []])
+    assert result.escalated == 0 and out.read_text() == ""
+
+
+def test_an_escalation_row_never_carries_a_document(box):
+    _tmp, _served, out = box
+    go(box, [[esc(data="# a whole report the model smuggled in")], []])
+    assert rows(out)[0]["data"] == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["ESCALATE/x", "escalate", "Escalate", "escalate/x.md", "ESCALATEd"],
+)
+def test_escalate_is_a_reserved_whole_name_not_a_substring(box, path):
+    _tmp, _served, out = box
+    _c, result, stub = go(box, [[good(path)], []])
+    if path == "ESCALATEd":  # an ordinary name that merely starts with it
+        assert result.escalated == 0 and result.proposals == 1
+        return
+    assert result.escalated == 0 and result.proposals == 0
+    assert out.read_text() == "" and result.end_reason == "silent"
+    assert "reserved" in stub.requests[1].messages[-1]["content"][0]["content"]
+
+
+def test_a_document_cannot_pass_as_an_escalation_or_the_reverse(box):
+    _tmp, _served, out = box
+    _c, result, _s = go(box, [[good("a.md")], []])
+    assert result.escalated == 0 and result.end_reason == "done"
+    assert [r["path"] for r in rows(out)] == ["a.md"]
+
+
+def test_an_escalation_is_still_valid_at_the_proposal_cap(box):
+    many = [good(f"p{i}.md") for i in range(os_mod.MAX_PROPOSALS)]
+    _c, result, _s = go(box, [[*many, esc()], []])
+    assert result.proposals == os_mod.MAX_PROPOSALS and result.escalated == 1
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"state": "empty", "why": "no scope", "tables": []},
+        {"state": "unreachable", "why": "down", "tables": []},
+    ],
+)
+def test_escalation_is_refused_when_the_served_state_is_not_populated(box, doc):
+    _tmp, _served, out = box
+    _c, result, stub = go(box, [[esc()], []], doc=doc)
+    assert result.escalated == 0 and out.read_text() == ""
+    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    assert handed_back.startswith("refused:") and doc["state"] in handed_back
+    assert result.end_reason == "silent"
+
+
+def test_the_end_report_says_which_happened(box, capsys):
+    cases = {
+        "done": ([[good()], []], 0),
+        "escalated": ([[esc()]], 1),
+        "silent": ([[]], 0),
+    }
+    for end, (script, esc_flag) in cases.items():
+        go(box, script)
+        line = capsys.readouterr().out
+        assert f" end={end} escalated={esc_flag}" in line, line
+
+
+def test_silent_is_distinct_from_done_with_rows(box):
+    _c, silent, _s = go(box, [[]])
+    _c, done, _s = go(box, [[good()], []])
+    assert (silent.end_reason, silent.proposals) == ("silent", 0)
+    assert (done.end_reason, done.proposals) == ("done", 1)
+
+
+def test_refused_rows_only_still_end_silent(box):
+    _c, result, _s = go(box, [[good("/abs")], []])
+    assert result.proposals == 0 and result.end_reason == "silent"
+
+
+def test_text_without_a_tool_call_is_nudged_once_then_ends_silent(box):
+    _tmp, _served, out = box
+    think = [{"text": "Let me think about the reviews..."}]
+    code, result, stub = go(box, [think, think, [good()]])
+    assert code == 0 and result.end_reason == "silent" and result.turns == 2
+    assert len(stub.requests) == 2  # one nudge, never a second, no third request
+    nudge = stub.requests[1].messages[-1]
+    assert nudge == {"role": "user", "content": os_mod.NUDGE}
+    assert "ESCALATE" in os_mod.NUDGE and "propose" in os_mod.NUDGE
+    assert out.read_text() == ""
+
+
+def test_the_nudge_can_be_answered_with_rows_or_an_escalation(box):
+    think = [{"text": "hmm"}]
+    _c, rowed, _s = go(box, [think, [good()], []])
+    assert (rowed.end_reason, rowed.proposals, rowed.turns) == ("done", 1, 3)
+    _c, escd, _s = go(box, [think, [esc()]])
+    assert (escd.end_reason, escd.escalated, escd.turns) == ("escalated", 1, 2)
+
+
+def test_no_nudge_after_rows_or_for_a_silent_model_or_an_unserved_block(box):
+    _c, _r, stub = go(box, [[good(), {"text": "all done"}]])
+    assert len(stub.requests) == 2  # the closing sentence after rows is not nudged
+    _c, _r, stub = go(box, [[{"text": "thinking"}]], doc={
+        "state": "empty", "why": "no scope", "tables": []})  # fmt: skip
+    assert len(stub.requests) == 1
+    _c, _r, stub = go(box, [[]])
+    assert len(stub.requests) == 1
+
+
+def test_the_nudge_obeys_the_turn_cap(box):
+    think = [{"text": "hmm"}]
+    _c, result, stub = go(box, [think, think], "--max-turns", "1")
+    assert result.end_reason == "turn_cap" and len(stub.requests) == 1
+
+
+def test_ctx_reaches_the_ollama_client_as_num_ctx_and_defaults_are_documented():
+    from ratatosk.ladder import Rung
+
+    rung = Rung("o", "ollama", "ollama", "http://127.0.0.1:9", None, {}, None, "x")
+    assert os_mod.default_client(rung, "m", 3000, env={}).ctx == 3000
+    p = os_mod.build_parser()
+    assert (p.get_default("ctx"), p.get_default("wall_clock")) == (None, 180.0)
+    assert os_mod.DEFAULT_CTX == 4096 and "180" in os_mod.__doc__
+    assert "4096" in os_mod.__doc__ and "num_ctx" in os_mod.__doc__
+
+
+def test_the_real_ollama_client_sends_the_flag_ctx_on_an_escalating_run(box, serve):
+    routes = {
+        "/api/tags": {"models": [{"name": "gemma3:4b"}]},
+        "/api/chat": {
+            "model": "gemma3:4b",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "propose",
+                            "arguments": {
+                                "path": "ESCALATE",
+                                "data": "",
+                                "cites": [],
+                                "claim": "no verdicts",
+                            },
+                        }
+                    }
+                ],
+            },
+        },
+    }
+    url, seen = serve(routes)
+    data = json.loads(json.dumps(LADDER))
+    data["rungs"]["ollama"]["base_url"] = url
+    code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(box[2]),
+         "--ctx", "3072", "--rung", "ollama", "--model", "gemma3:4b", "t"],
+        ladder=parse_ladder(data),
+        model_lister=REAL_LIST_MODELS,
+    )  # fmt: skip
+    assert code == 0 and result.end_reason == "escalated"
+    assert ("POST", "/api/chat") in seen
+    assert rows(box[2])[0]["path"] == "ESCALATE"

@@ -36,8 +36,31 @@ The proposals file is fixed contract (build A, E6651AD2, reads it): one JSON
 object per ``propose`` call, ``{"path": str, "data": str, "cites": [str],
 "claim": str}``, appended as one line. Nothing else is written anywhere.
 
-Exit status: 0 the model finished; 1 the turn ended early (cap, clock,
-provider); 2 refused before any request (usage, cloud rung, no room).
+Escalation: there is no separate tool. A model that cannot answer from the
+piece calls ``propose`` with the reserved path ``ESCALATE`` (exact match
+only), the reason in ``claim`` (required) and the ids it read in ``cites``
+(may be empty); ``data`` is ignored and written as "". The row is appended
+like any other and ends the turn. Escalating is always valid.
+
+How a run ends (``end=`` on the summary line, with ``escalated=0|1``):
+
+* ``done``       the model stopped after proposing at least one row.
+* ``escalated``  the model proposed ``ESCALATE``; no further row is taken.
+* ``silent``     the model proposed nothing (and escalated nothing). A model
+  that answered in text without calling ``propose`` is nudged once ("call
+  propose — rows or ESCALATE"), one extra turn inside the same caps; a second
+  silence ends ``silent``.
+* ``turn_cap`` / ``wall_clock`` / ``ctx_full`` / ``timeout`` /
+  ``provider_error:*`` / ``crash:*``  the turn ended early.
+
+Defaults: ``--ctx`` is the rung's reported window, else 4096; an Ollama rung
+is sent that number as ``num_ctx`` (llama.cpp's window is fixed at server
+start, so the server's reported window bounds the flag). ``--wall-clock`` is
+180 s and sets each request's timeout from the time left; ``--max-turns`` is 4.
+
+Exit status: 0 the model finished (done, escalated or silent); 1 the turn
+ended early (cap, clock, provider); 2 refused before any request (usage,
+cloud rung, no room).
 """
 
 from __future__ import annotations
@@ -88,6 +111,11 @@ SYSTEM_PROMPT = (
     "shows; an idea of your own is welcome, and an empty cites is how it is "
     "marked as one. Cite only ids that appear in the block. The block's "
     "`return` line says what a returned row may hold.\n"
+    "Answer by calling propose. If the block cannot support an answer to the "
+    'task, escalate instead: call propose with path "ESCALATE", data "", '
+    "cites the ids you read, and claim one sentence giving the reason. "
+    "Escalating is always valid and never a failure. One escalation ends "
+    "your turn.\n"
     "The block's state is populated, empty or unreachable. If it is empty or "
     "unreachable there is nothing to read: propose nothing and say so in one "
     "sentence. Never treat absence as fact: a table's `cannot_hold` says what "
@@ -95,20 +123,37 @@ SYSTEM_PROMPT = (
     "short sentence."
 )
 
+#: The reserved path. An escalation is a `propose` whose path is exactly this.
+ESCALATE = "ESCALATE"
+#: Closes the user turn, after the task, where a small model reads last.
+TASK_TAIL = (
+    'Answer with propose: rows citing table ids, or path "ESCALATE" with the '
+    "reason in claim."
+)
+#: The one extra turn given to a model that wrote text and called nothing.
+NUDGE = "Call propose now: rows that cite table ids, or path ESCALATE with the reason."
+
 TOOL_PROPOSE = {
     "name": "propose",
     "description": (
-        "Record one proposed document for a human to review. Nothing is "
-        "written by calling it."
+        "Record one proposed document for a human to review, or escalate "
+        'with path "ESCALATE" and the reason in claim. Nothing is written by '
+        "calling it."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "A relative name for the proposed document.",
+                "description": (
+                    "A relative name for the proposed document, or exactly "
+                    "ESCALATE to hand the task on."
+                ),
             },
-            "data": {"type": "string", "description": "The document's text."},
+            "data": {
+                "type": "string",
+                "description": "The document's text. Empty for ESCALATE.",
+            },
             "cites": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -119,7 +164,10 @@ TOOL_PROPOSE = {
             },
             "claim": {
                 "type": "string",
-                "description": "One sentence: what the document asserts.",
+                "description": (
+                    "One sentence: what the document asserts, or for ESCALATE "
+                    "the reason the block can't answer."
+                ),
             },
         },
         "required": ["path", "data", "cites", "claim"],
@@ -224,6 +272,7 @@ def served_budget(ctx: int, task: str) -> int:
         est_tokens(SYSTEM_PROMPT)
         + est_tokens(json.dumps(TOOLS))
         + est_tokens(task)
+        + est_tokens(TASK_TAIL)
         + 3 * MSG_OVERHEAD_TOKENS
     )
     return ctx - fixed - answer_reserve(ctx)
@@ -681,6 +730,9 @@ def validate_proposal(args: object) -> tuple[dict | None, str]:
         return None, "path must be a non-empty string"
     if not plain_relative_path(path):
         return None, "path must be a short, plain relative POSIX name, with no '..'"
+    escalating = path == ESCALATE
+    if not escalating and path.split("/")[0].casefold() == ESCALATE.casefold():
+        return None, 'the name ESCALATE is reserved: use exactly "ESCALATE" to escalate'
     if not isinstance(data, str) or len(data) > MAX_DATA:
         return None, f"data must be a string of at most {MAX_DATA} characters"
     if (
@@ -690,7 +742,11 @@ def validate_proposal(args: object) -> tuple[dict | None, str]:
     ):
         return None, "cites must be a list of served table id strings"
     if not isinstance(claim, str) or not claim.strip() or len(claim) > MAX_CLAIM:
+        if escalating:
+            return None, "an escalation needs its reason in claim"
         return None, "claim must be one non-empty sentence"
+    if escalating:
+        data = ""  # an escalation carries a reason, never a document
     return {"path": path, "data": data, "cites": list(cites), "claim": claim}, ""
 
 
@@ -715,7 +771,8 @@ class Result:
     ctx: int
     ctx_source: str
     state: str
-    proposals: int = 0
+    proposals: int = 0  # document rows only; an escalation row is not counted here
+    escalated: int = 0
     turns: int = 0
     end_reason: str = ""
     transcript: list[dict] = field(default_factory=list)
@@ -724,7 +781,8 @@ class Result:
         return (
             f"[onescript] model={self.model} rung={self.rung} "
             f"ctx={self.ctx} ({self.ctx_source}) served={self.state} "
-            f"proposals={self.proposals} turns={self.turns} end={self.end_reason}"
+            f"proposals={self.proposals} turns={self.turns} "
+            f"end={self.end_reason} escalated={self.escalated}"
         )
 
 
@@ -746,6 +804,7 @@ def run_loop(
     log = result.transcript
     log.append({"role": "user", "text": "[served block + task]"})
     result.end_reason = "turn_cap"
+    nudged = False
     for _ in range(max_turns):
         remaining = deadline - clock()
         if remaining <= 0:
@@ -783,13 +842,29 @@ def run_loop(
         log.append({"role": "assistant", "text": completion.text})
         uses = completion.tool_uses
         if not uses:
-            result.end_reason = "done"
+            # A thinking-mode model can answer in text and call nothing. Give
+            # it one more turn to call propose; a second silence is final.
+            if (
+                completion.text.strip()
+                and not nudged
+                and result.state == "populated"
+                and not result.proposals
+            ):
+                nudged = True
+                messages.append({"role": "assistant", "content": completion.text[:500]})
+                messages.append({"role": "user", "content": NUDGE})
+                log.append({"role": "nudge", "text": NUDGE})
+                continue
+            result.end_reason = "done" if result.proposals else "silent"
             break
         messages.append({"role": "assistant", "content": completion.blocks})
         results = []
         for use in uses:
             name = use.get("name")
-            if name != "propose":
+            if result.escalated:
+                note = "refused: you escalated; the turn is over"
+                log.append({"role": "refused", "tool": name, "text": note})
+            elif name != "propose":
                 note = f"refused: no tool named {name!r}; the only tool is propose"
                 log.append({"role": "refused", "tool": name, "text": note})
             elif result.state != "populated":
@@ -798,13 +873,19 @@ def run_loop(
                     "there is nothing to propose from"
                 )
                 log.append({"role": "refused", "tool": name, "text": note})
-            elif result.proposals >= MAX_PROPOSALS:
-                note = f"refused: at most {MAX_PROPOSALS} proposals per run"
-                log.append({"role": "refused", "tool": name, "text": note})
             else:
                 row, why = validate_proposal(use.get("input"))
                 if row is None:
                     note = f"refused: {why}"
+                    log.append({"role": "refused", "tool": name, "text": note})
+                elif row["path"] == ESCALATE:
+                    # Always valid, even at the proposal cap: it ends the turn.
+                    append_row(out_path, row)
+                    result.escalated = 1
+                    note = "escalation recorded"
+                    log.append({"role": "escalate", "row": row})
+                elif result.proposals >= MAX_PROPOSALS:
+                    note = f"refused: at most {MAX_PROPOSALS} proposals per run"
                     log.append({"role": "refused", "tool": name, "text": note})
                 else:
                     append_row(out_path, row)
@@ -814,6 +895,9 @@ def run_loop(
             results.append(
                 {"type": "tool_result", "tool_use_id": use.get("id"), "content": note}
             )
+        if result.escalated:
+            result.end_reason = "escalated"
+            break
         messages.append({"role": "user", "content": results})
     return result
 
@@ -905,7 +989,7 @@ def run(
         budget = served_budget(ctx, task)
         doc = load_served(args.served)
         state, block = render_served(doc, budget)
-        user_text = f"{block}\n\nTask: {task}"
+        user_text = f"{block}\n\nTask: {task}\n{TASK_TAIL}"
         floor = est_tokens(
             context(_doc("empty", "the scope is too large to serve; narrow the stack"))
         )
@@ -953,7 +1037,8 @@ def run(
         for entry in result.transcript:
             print(json.dumps(entry, ensure_ascii=False), file=stderr)
     print(result.summary(), file=stdout)
-    return (0 if result.end_reason == "done" else 1), result
+    finished = result.end_reason in ("done", "silent", "escalated")
+    return (0 if finished else 1), result
 
 
 def main(argv: list[str] | None = None) -> int:
