@@ -328,6 +328,10 @@ class RuntimeState:
     #: The seat this crown entered as (``ratatosk.seat.enter``), or ``None``
     #: when run without ``--app-id`` — the plain REPL, no persona, no handoff.
     seat: _seat.SeatEntry | None = None
+    #: Turns opened so far this session. The next turn is ``turn_count + 1``;
+    #: the same ``n`` goes on the turn_open row, the turn_close row, and (via
+    #: the writer's stamp) every row written between them.
+    turn_count: int = 0
 
 
 class CommandRouter:
@@ -581,7 +585,26 @@ def _run_turn(state: RuntimeState, user_input: str) -> None:
     _run_turn_bounded(state, user_input)
 
 
-def _run_turn_bounded(
+def _run_turn_bounded(state: RuntimeState, user_input: str, **bounds) -> str:
+    """Run one turn inside its record frame (one-script part 3).
+
+    ``turn_open(n)`` is written before the work and ``turn_close(n)`` after it,
+    in a ``finally`` so a raise or an interrupt still closes the turn. A
+    genuine crash (the process dying, so no ``finally`` runs) leaves the
+    ``turn_open`` row with no close: an open turn, not a gap, is the signal.
+    A failed close write never replaces the turn's own outcome or error.
+    """
+    state.turn_count += 1
+    n = state.turn_count
+    state.writer.write_turn_open(n)
+    try:
+        return _turn_loop(state, user_input, **bounds)
+    finally:
+        with contextlib.suppress(Exception):
+            state.writer.write_turn_close(n)
+
+
+def _turn_loop(
     state: RuntimeState,
     user_input: str,
     *,
