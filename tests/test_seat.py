@@ -925,8 +925,12 @@ def test_run_turn_writes_a_tool_row_the_closeout_can_count(tmp_path, monkeypatch
                     "sessionId",
                     "cwd",
                     "version",
+                    "code_hash",
+                    "turn",
                 )
             },
+            "who": "unknown",
+            "standing": "unattested",
             "type": "tool",
             "name": "store_get",
             "tool_use_id": "toolu_9",
