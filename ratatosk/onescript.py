@@ -82,10 +82,12 @@ SYSTEM_PROMPT = (
     "reach anything else. propose(path, data, cites, claim) records a "
     "proposed document for a human to review; calling it changes nothing by "
     "itself. path is a relative name for the document, data is its text, "
-    "cites lists the served table ids (their `id` fields) that back it, and "
-    "claim is one sentence saying what it asserts. Cite only ids that appear "
-    "in the block. The block's `return` line says what a returned row may "
-    "hold.\n"
+    "cites lists the served table ids (their `id` fields) the proposal rests "
+    "on, and claim is one sentence saying what it asserts. cites may be empty "
+    "when the proposal is your own idea rather than something the block "
+    "shows; an idea of your own is welcome, and an empty cites is how it is "
+    "marked as one. Cite only ids that appear in the block. The block's "
+    "`return` line says what a returned row may hold.\n"
     "The block's state is populated, empty or unreachable. If it is empty or "
     "unreachable there is nothing to read: propose nothing and say so in one "
     "sentence. Never treat absence as fact: a table's `cannot_hold` says what "
@@ -110,7 +112,10 @@ TOOL_PROPOSE = {
             "cites": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Served table ids that back the claim.",
+                "description": (
+                    "Served table ids the proposal rests on. May be empty "
+                    "when the proposal is your own idea."
+                ),
             },
             "claim": {
                 "type": "string",
@@ -197,7 +202,15 @@ def context(doc: dict) -> str:
 
 
 def est_tokens(text: str) -> int:
-    return -(-len(text) // CHARS_PER_TOKEN)
+    """A deliberately high count: ASCII at CHARS_PER_TOKEN characters a token,
+    every other character at one token per UTF-8 byte (CJK and emoji can cost
+    that much), so non-ASCII text cannot overflow the window unseen."""
+    if text.isascii():
+        return -(-len(text) // CHARS_PER_TOKEN)
+    raw = text.encode("utf-8", "surrogatepass")
+    ascii_chars = len(text) - sum(1 for c in text if ord(c) > 127)
+    other_bytes = len(raw) - ascii_chars
+    return -(-ascii_chars // CHARS_PER_TOKEN) + other_bytes
 
 
 def answer_reserve(ctx: int) -> int:
@@ -363,6 +376,22 @@ class LocalOpenAIClient(OpenAICompatibleClient):
         return _opener().open(req, timeout=self.timeout)
 
 
+def _ollama_remote_names(root: str, timeout: float) -> set[str]:
+    """Names an Ollama daemon at `root` says are hosted elsewhere (cloud
+    aliases). Empty when the server isn't Ollama or won't say: an OpenAI-dialect
+    loopback rung is often Ollama's own `/v1`, whose `/v1/models` lists cloud
+    aliases beside local models without marking them."""
+    try:
+        info = _http_json(f"{root}/api/tags", None, timeout)
+        out: set[str] = set()
+        for m in info.get("models") or []:
+            if isinstance(m, dict) and m.get("remote_host"):
+                out.update(m[k] for k in ("name", "model") if isinstance(m.get(k), str))
+        return out
+    except Exception:
+        return set()
+
+
 def list_models(rung: Rung, *, timeout: float = 3.0) -> list[str] | None:
     """The model names the rung itself lists; None when it won't say.
 
@@ -387,10 +416,15 @@ def list_models(rung: Rung, *, timeout: float = 3.0) -> list[str] | None:
         if key:
             headers["Authorization"] = f"Bearer {key}"
         info = _http_json(url, None, timeout, headers=headers)
+        remote = _ollama_remote_names(base.removesuffix("/v1"), timeout)
         return [
             m["id"]
             for m in info.get("data") or []
-            if isinstance(m, dict) and isinstance(m.get("id"), str)
+            if isinstance(m, dict)
+            and isinstance(m.get("id"), str)
+            and not is_cloud_model_name(m["id"])
+            and not m.get("remote_host")
+            and m["id"] not in remote
         ]
     except Exception:
         return None
@@ -620,7 +654,15 @@ def plain_relative_path(path: str) -> bool:
         return False
     if any(c in path for c in ("~", "%", "\\")) or _WIN_DRIVE.match(path):
         return False
-    return all(seg not in ("", "..") for seg in path.split("/"))
+    # Line/paragraph separators (U+2028/2029) and every other separator
+    # (no-break, ideographic, en/em spaces…) look like a space and aren't one;
+    # only the ASCII space is allowed, and never at a segment's edge.
+    if any(unicodedata.category(c).startswith("Z") and c != " " for c in path):
+        return False
+    return all(
+        seg not in ("", "..") and not seg.startswith(" ") and not seg.endswith(" ")
+        for seg in path.split("/")
+    )
 
 
 def validate_proposal(args: object) -> tuple[dict | None, str]:

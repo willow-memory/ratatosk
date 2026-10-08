@@ -873,7 +873,7 @@ def test_a_proxy_in_the_environment_does_not_carry_any_request(serve, monkeypatc
     c = os_mod.default_client(_rung(f"{target}/v1", "openai"), "m", 4096, env={})
     assert c.complete(REQ).text == "k"
     assert pseen == [], "a request went to the environment proxy"
-    assert len(tseen) == 6
+    assert len(tseen) == 7  # the openai listing also asks /api/tags for aliases
 
 
 def test_a_loopback_redirect_is_not_followed(serve):
@@ -1118,6 +1118,145 @@ def test_propose_is_refused_when_the_served_state_is_not_populated(box, doc):
     assert result.proposals == 0 and out.read_text() == ""
     handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
     assert handed_back.startswith("refused:") and doc["state"] in handed_back
+
+
+# --- amendment: own ideas (pair 440d91ee), separators, CJK budget, /v1 aliases --
+
+
+def test_the_model_is_told_it_may_propose_an_idea_of_its_own(box):
+    _c, _r, stub = go(box, [[]])
+    req = stub.requests[0]
+    assert "your own idea" in req.system
+    assert "may be empty" in req.system
+    desc = req.tools[0]["input_schema"]["properties"]["cites"]["description"]
+    assert "May be empty" in desc and "own idea" in desc
+
+
+def test_a_proposal_with_empty_cites_is_written_as_the_contract_row(box):
+    _tmp, _served, out = box
+    own = good("idea.md", cites=[], claim="a thing the table doesn't show")
+    _c, result, _s = go(box, [[own], []])
+    assert result.proposals == 1
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert list(row) == ["path", "data", "cites", "claim"]
+    assert row["cites"] == []
+
+
+def test_empty_cites_is_still_refused_when_the_served_block_is_not_populated(box):
+    _tmp, _served, out = box
+    doc = {"state": "empty", "why": "no scope", "tables": []}
+    _c, result, _s = go(box, [[good(cites=[])], []], doc=doc)
+    assert result.proposals == 0 and out.read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "a\u2028b", "a\u2029b", "a\u00a0b", "a\u3000b", "a\u2003b", "a\u202fb",
+        "a/ b", "a /b", "a/b /c", "a/ ", "x/  y", "a/\u00a0b",
+    ],
+)  # fmt: skip
+def test_separators_and_edge_spaces_are_not_plain_path_characters(path):
+    assert os_mod.plain_relative_path(path) is False
+    row, why = os_mod.validate_proposal(
+        {"path": path, "data": "d", "cites": [], "claim": "c"}
+    )
+    assert row is None and why
+
+
+def test_non_ascii_text_is_not_under_counted():
+    assert os_mod.est_tokens("a" * 300) == 100
+    assert os_mod.est_tokens("漢" * 300) >= 300  # CJK: a token a char at least
+    assert os_mod.est_tokens("\U0001f600" * 100) >= 100
+    assert os_mod.est_tokens("\ud800" * 10) >= 10  # a lone surrogate doesn't crash
+
+
+def test_a_cjk_document_that_would_overflow_is_replaced_by_empty(box):
+    cjk = served_doc(text="漢" * 1500)  # ~640 tokens counted at 3 chars/token
+    _c, result, stub = go(box, [[]], doc=cjk)
+    user = stub.requests[0].messages[0]["content"]
+    assert result.state == "empty" and "narrow the stack" in user
+    assert "漢" not in user
+
+
+def test_a_cjk_proposal_history_stops_at_the_byte_bound(box):
+    """Each turn's CJK payload is counted at a token a byte, not 3 a token."""
+    big = [[good(f"p{i}.md", data="漢" * 150)] for i in range(12)]
+    stub = Stub(big)
+    _code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(box[2]),
+         "--ctx", "2048", "--max-turns", "12", "t"],
+        ladder=ladder(),
+        client_factory=lambda *a: stub,
+        ctx_probe=lambda r, m: None,
+    )  # fmt: skip
+    assert result.end_reason == "ctx_full"
+    # 150 CJK chars = 450 bytes a turn; at 3 chars a token the old count
+    # (~50 a turn) would have gone on for many more turns than this.
+    assert result.turns <= 2
+
+
+V1_ALIASES = {
+    "/v1/models": {
+        "data": [
+            {"id": "local-gguf"},
+            {"id": "gpt-oss:120b-cloud"},
+            {"id": "qwen3-coder:cloud"},
+            {"id": "plain-alias"},
+            {"id": "tagged-remote", "remote_host": "https://x"},
+        ]
+    },
+    "/api/tags": {
+        "models": [
+            {"name": "local-gguf"},
+            {"name": "plain-alias", "model": "plain-alias", "remote_host": "https://x"},
+        ]
+    },
+}
+
+
+def test_list_models_leaves_out_cloud_aliases_on_an_openai_loopback_rung(serve):
+    url, _s = serve(V1_ALIASES)
+    assert REAL_LIST_MODELS(_rung(f"{url}/v1", "openai")) == ["local-gguf"]
+    assert REAL_LIST_MODELS(_rung(url, "openai")) == ["local-gguf"]
+
+
+@pytest.mark.parametrize(
+    "model", ["plain-alias", "tagged-remote", "gpt-oss:120b-cloud"]
+)
+def test_an_openai_loopback_rung_serving_a_cloud_alias_is_refused(
+    box, serve, capsys, model
+):
+    url, _s = serve(V1_ALIASES)
+    data = json.loads(json.dumps(LADDER))
+    data["rungs"]["llamacpp"]["base_url"] = f"{url}/v1"
+    called = []
+    code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(box[2]),
+         "--ctx", "4096", "--rung", "llamacpp", "--model", model, "t"],
+        ladder=parse_ladder(data),
+        client_factory=lambda *a: called.append(1),
+        model_lister=REAL_LIST_MODELS,
+        ctx_probe=lambda *a: None,
+    )  # fmt: skip
+    assert code == 2 and result is None and not called
+    err = capsys.readouterr().err
+    assert "cloud model" in err or "not listed" in err
+
+
+def test_a_local_model_on_an_openai_loopback_rung_still_runs(box, serve):
+    url, _s = serve(V1_ALIASES)
+    data = json.loads(json.dumps(LADDER))
+    data["rungs"]["llamacpp"]["base_url"] = f"{url}/v1"
+    code, result = os_mod.run(
+        ["--onescript", "--served", str(box[1]), "--out", str(box[2]),
+         "--ctx", "4096", "--rung", "llamacpp", "--model", "local-gguf", "t"],
+        ladder=parse_ladder(data),
+        client_factory=lambda *a: Stub([[]]),
+        model_lister=REAL_LIST_MODELS,
+        ctx_probe=lambda *a: None,
+    )  # fmt: skip
+    assert code == 0 and result.model == "local-gguf"
 
 
 def test_propose_is_refused_when_the_block_was_replaced_by_empty(box):
