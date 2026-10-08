@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.13.0](https://github.com/willow-memory/ratatosk/compare/v1.12.8...v1.13.0) (2026-10-08)
+
+
+### Added
+
+* **onescript:** allow the model's own ideas; close Loki N4, N1, N2 ([5d39194](https://github.com/willow-memory/ratatosk/commit/5d3919423e7e552b361e5d509f88038b823f9cd3))
+* **onescript:** ratatosk --onescript, the one script's model seat ([dc3a2d1](https://github.com/willow-memory/ratatosk/commit/dc3a2d1fbb1aa542d08626ed730520ceb8d54307))
+* **onescript:** the one script's model seat — local rungs only, one propose tool ([#79](https://github.com/willow-memory/ratatosk/issues/79)) ([e4a7e62](https://github.com/willow-memory/ratatosk/commit/e4a7e6265ec4351bf3e1241bd63b6c0903b21e66))
+
+
+### Fixed
+
+* **onescript:** close Loki 0C6FAFBF F1-F5 and gate propose on a populated block ([9a562b6](https://github.com/willow-memory/ratatosk/commit/9a562b6d2cb6f1a9e23c4c562e516bfb568baadf))
+
 ## [1.12.8](https://github.com/willow-memory/ratatosk/compare/v1.12.7...v1.12.8) (2026-09-30)
 
 
