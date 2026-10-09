@@ -21,6 +21,14 @@ with it before any cloud gets in"):
   address and its dialect is ``ollama`` or ``openai`` (an OpenAI-compatible
   server such as llama.cpp). A cloud rung, or a cloud model name, is refused
   loudly before any request is built.
+* The one exception is ``--class flowering`` (operator, 2026-10-09: "The
+  deterministic chain runs, esclates to local models if need be, then to the
+  cloud models"). It is the desk's turn on a card the chain could not close:
+  the ladder's ``flowering`` class names the rungs, their models and their
+  order, and a rate limit, overload, timeout or transport failure before any
+  row is written steps to the next rung. ``--rung`` and ``--model`` are
+  refused beside it. Everything else here holds unchanged: one tool, the
+  frame, the caps, no path.
 * The model never sees a path, a box, a repo, or a tool other than
   ``propose``. The served file's path is read once by code and goes nowhere
   else — not into the prompt, not into the summary line.
@@ -196,6 +204,17 @@ DEFAULT_MAX_TURNS = 4
 DEFAULT_WALL_CLOCK = 180.0
 MAX_PROPOSALS = 16
 LOCAL_DIALECTS = ("ollama", "openai")
+#: The only classes ``--class`` takes. A flowering turn is the desk's act, one
+#: per card the deterministic chain could not close (operator, 2026-10-09:
+#: "The deterministic chain runs, esclates to local models if need be, then to
+#: the cloud models"; "new flowering class, go"). Its rungs and their order
+#: are the ladder's, never this module's.
+CLOUD_CLASSES = ("flowering",)
+#: A rung that ends the turn with one of these, before any row was written,
+#: steps to the next rung of the class. Same set as
+#: ``ratatosk.inference.TRANSIENT_KINDS``; a test holds them equal (this
+#: module does not import inference).
+STEP_KINDS = frozenset({"rate_limited", "overloaded", "timeout", "transport"})
 
 # propose() argument bounds. Types and sizes only: what a proposal says is the
 # reader's to judge, not this code's.
@@ -687,6 +706,55 @@ def default_client(
     return LocalOpenAIClient(rung.base_url, env.get(rung.key_env or "", ""))
 
 
+def cloud_client(
+    rung: Rung, model: str, ctx: int, env: Mapping[str, str] | None = None
+):
+    """``--class`` only: the rung's own client, as Rat's other modes reach it.
+    The no-proxy, no-redirect opener is for loopback rungs; a cloud rung goes
+    out the way the box's network says it must."""
+    env = os.environ if env is None else env
+    if rung.dialect == "ollama":
+        return OllamaToolClient(rung.base_url, ctx)
+    return OpenAICompatibleClient(rung.base_url, env.get(rung.key_env or "", ""))
+
+
+def choose_class_rungs(
+    ladder: Ladder,
+    task_class: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    rung_name: str | None = None,
+    model: str | None = None,
+) -> list[tuple[Rung, str]]:
+    """``--class``: the class's usable rungs in the ladder's order, or
+    `OneScriptRefused` naming every skipped rung's reason."""
+    if task_class not in CLOUD_CLASSES:
+        raise OneScriptRefused(
+            f"--class {task_class}: --onescript takes only {', '.join(CLOUD_CLASSES)}"
+        )
+    if rung_name or model:
+        raise OneScriptRefused(
+            "--class takes its rungs and models from the ladder; "
+            "drop --rung and --model"
+        )
+    try:
+        resolution = ladder.resolve(task_class, env=env)
+    except LadderError as exc:
+        raise OneScriptRefused(str(exc)) from None
+    picked: list[tuple[Rung, str]] = []
+    skipped = [v.reason for v in resolution.skipped]
+    for v in resolution.usable:
+        if v.rung.dialect not in LOCAL_DIALECTS:
+            skipped.append(f"{v.rung.name}: no tool client for {v.rung.dialect}")
+        else:
+            picked.append((v.rung, v.model or ""))
+    if not picked:
+        raise OneScriptRefused(
+            f"no usable rung in class {task_class!r}: " + "; ".join(skipped)
+        )
+    return picked
+
+
 # --- propose: the one tool ---------------------------------------------------
 
 
@@ -776,14 +844,19 @@ class Result:
     turns: int = 0
     end_reason: str = ""
     transcript: list[dict] = field(default_factory=list)
+    #: ``--class`` only: the rungs tried before this one, as ``rung:end``.
+    stepped: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        return (
+        line = (
             f"[onescript] model={self.model} rung={self.rung} "
             f"ctx={self.ctx} ({self.ctx_source}) served={self.state} "
             f"proposals={self.proposals} turns={self.turns} "
             f"end={self.end_reason} escalated={self.escalated}"
         )
+        if self.stepped:
+            line += f" stepped={','.join(self.stepped)}"
+        return line
 
 
 def run_loop(
@@ -919,6 +992,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=None, help="a local model; default: the rung's")
     p.add_argument("--rung", default=None, help="a local rung by name")
     p.add_argument(
+        "--class",
+        dest="task_class",
+        default=None,
+        help=(
+            "flowering: the cloud turn the desk takes for a card the chain "
+            "left; rungs, models and order come from the ladder"
+        ),
+    )
+    p.add_argument(
         "--ctx",
         type=int,
         default=None,
@@ -957,34 +1039,48 @@ def run(
             ladder = ladder or load_ladder()
         except LadderError as exc:
             raise OneScriptRefused(str(exc)) from None
-        rung, model = choose_rung(ladder, args.model, args.rung)
-
-        # The model must be one the local rung itself lists: a cloud model an
-        # Ollama daemon proxies, or a name the rung doesn't know, is refused
-        # here, before any chat request.
-        names = (model_lister or list_models)(rung)
-        if names is None:
-            raise OneScriptRefused(
-                f"rung {rung.name} didn't list its models; can't confirm "
-                f"{model} is local"
+        plan: list[tuple[Rung, str]] | None = None
+        if args.task_class is not None:
+            # A cloud rung reports no window this mode can ask for, so the
+            # budget is the flag's or the phone budget: a flowering piece was
+            # cut to fit a local rung before it got here.
+            plan = choose_class_rungs(
+                ladder, args.task_class, rung_name=args.rung, model=args.model
             )
-        if not _listed(model, names):
-            raise OneScriptRefused(
-                f"model {model} is not listed by local rung {rung.name}"
+            rung, model = plan[0]
+            ctx, source = (
+                (args.ctx, "flag") if args.ctx is not None else (DEFAULT_CTX, "default")
             )
-
-        # llama.cpp fixes its window at server start and takes none per
-        # request, so on that path the window the server reports bounds the
-        # flag; Ollama is sent the window (num_ctx) the budget was sized for.
-        probed = None
-        if args.ctx is None or rung.dialect == "openai":
-            probed = (ctx_probe or probe_ctx)(rung, model)
-        if args.ctx is not None:
-            ctx, source = args.ctx, "flag"
-            if rung.dialect == "openai" and probed and probed < args.ctx:
-                ctx, source = probed, "rung"
         else:
-            ctx, source = (probed, "rung") if probed else (DEFAULT_CTX, "default")
+            rung, model = choose_rung(ladder, args.model, args.rung)
+
+            # The model must be one the local rung itself lists: a cloud model
+            # an Ollama daemon proxies, or a name the rung doesn't know, is
+            # refused here, before any chat request.
+            names = (model_lister or list_models)(rung)
+            if names is None:
+                raise OneScriptRefused(
+                    f"rung {rung.name} didn't list its models; can't confirm "
+                    f"{model} is local"
+                )
+            if not _listed(model, names):
+                raise OneScriptRefused(
+                    f"model {model} is not listed by local rung {rung.name}"
+                )
+
+            # llama.cpp fixes its window at server start and takes none per
+            # request, so on that path the window the server reports bounds
+            # the flag; Ollama is sent the window (num_ctx) the budget was
+            # sized for.
+            probed = None
+            if args.ctx is None or rung.dialect == "openai":
+                probed = (ctx_probe or probe_ctx)(rung, model)
+            if args.ctx is not None:
+                ctx, source = args.ctx, "flag"
+                if rung.dialect == "openai" and probed and probed < args.ctx:
+                    ctx, source = probed, "rung"
+            else:
+                ctx, source = (probed, "rung") if probed else (DEFAULT_CTX, "default")
 
         budget = served_budget(ctx, task)
         doc = load_served(args.served)
@@ -1017,22 +1113,47 @@ def run(
     # distinguishable from "never ran".
     with open(args.out, "a", encoding="utf-8"):
         pass
-    factory = client_factory or default_client
-    client = factory(rung, model, ctx)
-    result = Result(
-        model=model, rung=rung.name, ctx=ctx, ctx_source=source, state=state
-    )
-    run_loop(
-        client,
-        model=model,
-        user_text=user_text,
-        out_path=args.out,
-        ctx=ctx,
-        result=result,
-        max_turns=args.max_turns,
-        wall_clock=args.wall_clock,
-        clock=clock,
-    )
+    factory = client_factory or (cloud_client if plan else default_client)
+    # One clock across every rung a class steps through; a local run keeps
+    # the clock run_loop starts for it.
+    deadline = clock() + args.wall_clock if plan else None
+    stepped: list[str] = []
+    for try_rung, try_model in plan or [(rung, model)]:
+        client = factory(try_rung, try_model, ctx)
+        result = Result(
+            model=try_model,
+            rung=try_rung.name,
+            ctx=ctx,
+            ctx_source=source,
+            state=state,
+            stepped=list(stepped),
+        )
+        run_loop(
+            client,
+            model=try_model,
+            user_text=user_text,
+            out_path=args.out,
+            ctx=ctx,
+            result=result,
+            max_turns=args.max_turns,
+            wall_clock=(
+                args.wall_clock if deadline is None else max(deadline - clock(), 0.0)
+            ),
+            clock=clock,
+        )
+        # Step only when the rung itself failed transiently and nothing was
+        # written: a row on disk belongs to this rung's turn, and is never
+        # mixed with another model's.
+        kind = result.end_reason.removeprefix("provider_error:")
+        if (
+            plan
+            and kind in STEP_KINDS
+            and not result.proposals
+            and not result.escalated
+        ):
+            stepped.append(f"{try_rung.name}:{result.end_reason}")
+            continue
+        break
     if args.verbose:
         for entry in result.transcript:
             print(json.dumps(entry, ensure_ascii=False), file=stderr)

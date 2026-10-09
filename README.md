@@ -31,6 +31,9 @@ ratatosk --mcp --deposit
 ```bash
 ratatosk --onescript --served served.json --out proposals.jsonl \
     [--model gemma3:4b] [--rung ollama] [--ctx 4096] "<task>"
+
+# the desk's cloud turn on a card the chain could not close
+ratatosk --onescript --class flowering --served piece.json --out proposals.jsonl "<task>"
 ```
 
 One local model turn over a document serve wrote. It is a different program
@@ -42,6 +45,7 @@ user turn, and one tool.
 | Rule | What it means |
 |------|---------------|
 | Local rungs only | A rung is local when its `base_url` is loopback and its dialect is `ollama` or `openai` (an OpenAI-compatible server such as llama.cpp). A cloud rung, a cloud model name, or a ladder with no local rung is refused with exit 2 before any request. |
+| `--class flowering` | The one way past local-only: the ladder's `flowering` class names the rungs, models and order (free tiers only). A rate limit, overload, timeout or transport failure before any row is written steps to the next rung; the summary line gains `stepped=rung:end,…`. `--rung` and `--model` are refused beside it. Every other rule here holds. |
 | One tool, one write | `propose(path, data, cites, claim)` appends one line `{"path", "data", "cites", "claim"}` to `--out`. That file is the only thing written. Any other tool name is refused and recorded in the transcript, never run. A malformed call (absolute or `..` path, non-list `cites`, over-size field) is handed back as `refused:` and not written. At most 16 proposals per run. |
 | Three states | `populated`, `empty` and `unreachable` reach the model as themselves. A missing, unreadable or non-served file is `unreachable`; serve's own `empty` stays `empty`. `<` is escaped so served text cannot close the frame, and serve's `return` line is carried through. |
 | Budget | The served block is sized from the model's context: `--ctx`, else the rung's own answer (Ollama `/api/show` `num_ctx`, llama.cpp `/props`), else 4096 (the phone budget), minus the frame, the task and an answer reserve. Over budget the block becomes `empty` ("narrow the stack"). It is never truncated. For Ollama the measured window is sent as `num_ctx`, so the budget is the window the model runs with. |

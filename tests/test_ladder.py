@@ -71,6 +71,7 @@ def test_the_shipped_ladder_loads_and_names_every_class_rung():
         "chat",
         "summarize",
         "classify",
+        "flowering",
     }
     for cls, names in ladder.classes.items():
         for n in names:
@@ -97,6 +98,18 @@ def test_the_shipped_audit_class_names_no_paid_rung():
         tier = raw["rungs"][n]["budget"]["tier"]
         assert tier == "free", f"audit names {n}, whose budget tier is {tier!r}"
         assert ladder.rungs[n].dialect != "anthropic", f"audit names {n}"
+
+
+def test_the_shipped_flowering_class_names_no_paid_rung():
+    """A flowering turn steps from one free provider to the next, as audit
+    does; reaching a rung that bills is the operator's explicit ask."""
+    raw = json.loads(_ladder.LADDER_PATH.read_text())
+    ladder = load_ladder()
+    assert ladder.classes["flowering"], "the flowering class is empty"
+    for n in ladder.classes["flowering"]:
+        tier = raw["rungs"][n]["budget"]["tier"]
+        assert tier == "free", f"flowering names {n}, whose budget tier is {tier!r}"
+        assert ladder.rungs[n].dialect != "anthropic", f"flowering names {n}"
 
 
 def _family(model: str) -> str:
