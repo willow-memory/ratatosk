@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.0](https://github.com/willow-memory/ratatosk/compare/v1.15.0...v1.16.0) (2026-10-09)
+
+
+### Added
+
+* **onescript:** --class flowering, the desk's cloud turn through the ladder ([986a9ed](https://github.com/willow-memory/ratatosk/commit/986a9ed42fbd1e2667ab7cf078a9c4b8672f62f1))
+* **onescript:** --class flowering, the desk's cloud turn through the ladder ([#85](https://github.com/willow-memory/ratatosk/issues/85)) ([7f5fb6f](https://github.com/willow-memory/ratatosk/commit/7f5fb6fea934195fcee74234bf7fbd85c15c885d))
+
 ## [1.15.0](https://github.com/willow-memory/ratatosk/compare/v1.14.0...v1.15.0) (2026-10-08)
 
 
