@@ -1507,3 +1507,183 @@ def test_the_real_ollama_client_sends_the_flag_ctx_on_an_escalating_run(box, ser
     assert code == 0 and result.end_reason == "escalated"
     assert ("POST", "/api/chat") in seen
     assert rows(box[2])[0]["path"] == "ESCALATE"
+
+
+# --- --class flowering: the desk's cloud turn --------------------------------
+
+FLOWER = {
+    **LADDER,
+    "rungs": {
+        **LADDER["rungs"],
+        "openrouter": {
+            "provider": "openrouter",
+            "dialect": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "key_env": "OPENROUTER_API_KEY",
+            "models": {"flowering": "nvidia/nemotron-3-super-120b-a12b:free"},
+            "verify_at": None,
+        },
+        "groq": {
+            **LADDER["rungs"]["groq"],
+            "models": {
+                **LADDER["rungs"]["groq"]["models"],
+                "flowering": "openai/gpt-oss-120b",
+            },
+        },
+        "anthropic": {
+            **LADDER["rungs"]["anthropic"],
+            "models": {"flowering": "claude-sonnet-5"},
+        },
+    },
+    "classes": {
+        "chat": ["ollama", "groq"],
+        "flowering": ["openrouter", "groq", "anthropic"],
+    },
+}
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    for k in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(k, "test-key")
+    return monkeypatch
+
+
+def flower(box, scripts, *extra):
+    """Run --class flowering with one scripted stub per rung, by rung name."""
+    _tmp, served, out = box
+    stubs = {name: Stub(script) for name, script in scripts.items()}
+    built: list[str] = []
+
+    def factory(rung, model, ctx):
+        built.append(rung.name)
+        return stubs[rung.name]
+
+    argv = [
+        "--onescript", "--served", str(served), "--out", str(out),
+        "--class", "flowering", *extra, "summarize the stack",
+    ]  # fmt: skip
+    code, result = os_mod.run(argv, ladder=parse_ladder(FLOWER), client_factory=factory)
+    return code, result, built
+
+
+def test_flowering_takes_the_ladders_first_usable_rung(box, keys, capsys):
+    code, result, built = flower(box, {"openrouter": [[good()], []]})
+    assert code == 0 and built == ["openrouter"]
+    assert result.model == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert rows(box[2])[0]["path"] == "notes/summary.md"
+    assert "stepped=" not in capsys.readouterr().out
+
+
+def test_flowering_skips_a_rung_with_no_key(box, keys):
+    keys.delenv("OPENROUTER_API_KEY")
+    code, result, built = flower(box, {"groq": [[]]})
+    assert code == 0 and built == ["groq"] and result.rung == "groq"
+
+
+@pytest.mark.parametrize("kind", sorted(os_mod.STEP_KINDS))
+def test_flowering_steps_on_a_transient_failure(box, keys, kind, capsys):
+    err = ProviderError("busy", retryable=True, kind=kind)
+    code, result, built = flower(box, {"openrouter": [err], "groq": [[good()], []]})
+    assert code == 0 and built == ["openrouter", "groq"]
+    assert result.rung == "groq" and result.stepped
+    assert "stepped=openrouter:" in capsys.readouterr().out
+
+
+def test_flowering_does_not_step_on_a_defect(box, keys):
+    err = ProviderError("no such model", retryable=False, kind="not_found")
+    code, _result, built = flower(box, {"openrouter": [err]})
+    assert code == 1 and built == ["openrouter"]
+
+
+def test_flowering_never_steps_after_a_row_is_written(box, keys):
+    err = ProviderError("busy", retryable=True, kind="rate_limited")
+    code, result, built = flower(box, {"openrouter": [[good()], err]})
+    assert code == 1 and built == ["openrouter"] and result.proposals == 1
+    assert len(rows(box[2])) == 1
+
+
+def test_flowering_never_reaches_a_rung_with_no_tool_client(box, keys):
+    err = ProviderError("busy", retryable=True, kind="rate_limited")
+    code, result, built = flower(box, {"openrouter": [err], "groq": [err]})
+    assert code == 1 and built == ["openrouter", "groq"]
+    assert result.stepped == ["openrouter:provider_error:rate_limited"]
+
+
+def test_flowering_holds_one_tool_and_the_frame(box, keys):
+    stubs = {"openrouter": Stub([[call("Bash", command="ls")], []])}
+    _tmp, served, out = box
+    _code, result = os_mod.run(
+        ["--onescript", "--served", str(served), "--out", str(out),
+         "--class", "flowering", "summarize the stack"],
+        ladder=parse_ladder(FLOWER),
+        client_factory=lambda rung, model, ctx: stubs[rung.name],
+    )  # fmt: skip
+    r = stubs["openrouter"].requests[0]
+    assert [t["name"] for t in r.tools] == ["propose"]
+    assert str(served.parent.name) not in request_text(stubs["openrouter"])
+    assert any(e["role"] == "refused" for e in result.transcript)
+
+
+@pytest.mark.parametrize(
+    "extra, said",
+    [
+        (["--rung", "groq"], "drop --rung and --model"),
+        (["--model", "openai/gpt-oss-120b"], "drop --rung and --model"),
+    ],
+)
+def test_flowering_refuses_rung_and_model_beside_it(box, keys, capsys, extra, said):
+    code, result, built = flower(box, {}, *extra)
+    assert code == 2 and result is None and built == []
+    assert said in capsys.readouterr().err
+
+
+def test_only_the_flowering_class_is_taken(box, keys, capsys):
+    _tmp, served, out = box
+    code, _result = os_mod.run(
+        ["--onescript", "--served", str(served), "--out", str(out),
+         "--class", "chat", "summarize the stack"],
+        ladder=parse_ladder(FLOWER),
+        client_factory=lambda *a: pytest.fail("a client was built"),
+    )  # fmt: skip
+    assert code == 2 and "takes only flowering" in capsys.readouterr().err
+
+
+def test_flowering_with_no_usable_rung_names_every_reason(box, monkeypatch, capsys):
+    for k in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    code, _result, built = flower(box, {})
+    err = capsys.readouterr().err
+    assert code == 2 and built == []
+    assert "OPENROUTER_API_KEY is unset" in err and "GROQ_API_KEY is unset" in err
+
+
+def test_flowering_skips_a_dialect_this_mode_has_no_tool_client_for(
+    box, monkeypatch, capsys
+):
+    for k in ("OPENROUTER_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    code, _r, built = flower(box, {})
+    assert code == 2 and built == []
+    assert "no tool client for anthropic" in capsys.readouterr().err
+
+
+def test_without_class_a_cloud_rung_is_still_refused(box, keys, capsys):
+    err = refused(box, ["--rung", "groq"], led=parse_ladder(FLOWER), capsys=capsys)
+    assert "local rungs only" in err
+
+
+def test_step_kinds_match_the_routers_transient_kinds():
+    from ratatosk.inference import TRANSIENT_KINDS
+
+    assert os_mod.STEP_KINDS == TRANSIENT_KINDS
+
+
+def test_cloud_client_is_the_rungs_own_client_not_the_loopback_one(monkeypatch):
+    from ratatosk.ladder import Rung
+    from ratatosk.providers import OpenAICompatibleClient
+
+    rung = Rung("r", "p", "openai", "https://x.example/v1", "R_KEY", {}, None, "u")
+    c = os_mod.cloud_client(rung, "m", 4096, env={"R_KEY": "k"})
+    assert type(c) is OpenAICompatibleClient
