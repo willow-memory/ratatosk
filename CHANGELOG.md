@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.17.0](https://github.com/willow-memory/ratatosk/compare/v1.16.0...v1.17.0) (2026-10-21)
+
+
+### Added
+
+* **one-script:** ratatosk carries the one reach's bootstrap (flatten-2 F6.5) ([7914647](https://github.com/willow-memory/ratatosk/commit/79146471c8b21cba037013fd0ba07de36a59ae8c))
+* **one-script:** ratatosk takes the one script's rules, and carries states ([#87](https://github.com/willow-memory/ratatosk/issues/87)) ([f1bed9e](https://github.com/willow-memory/ratatosk/commit/f1bed9ec46d6d2d9d591d80154927f6f80536b77))
+
+
+### Changed
+
+* **one-script:** ratatosk redact takes its patterns from the one script (flatten-2 F12) ([6eb17bc](https://github.com/willow-memory/ratatosk/commit/6eb17bcfc0c999715de94cd4e0abed3788d0621e))
+* **one-script:** ratatosk takes the three states from a carried copy of states.py, held by a parity test (flatten-2 reverse pass on F5) ([cf3f9fa](https://github.com/willow-memory/ratatosk/commit/cf3f9faf13fb56430465bb17976de464662ff3ae))
+* **one-script:** ratatosk's states copy follows the one script (escalated named as a step) ([2f5ba53](https://github.com/willow-memory/ratatosk/commit/2f5ba5328e2409ca980c05d05ba2a9a09f6f8858))
+* **one-script:** states_local carries the report-key constants (flatten-2 reverse pass) ([9993434](https://github.com/willow-memory/ratatosk/commit/99934344d7e2a490fe75af859d7875c795f48048))
+* **one-script:** the envelope's now and expiry come from the one clock (flatten-2 F8) ([7a6f206](https://github.com/willow-memory/ratatosk/commit/7a6f206d20adfb2d3c9579750e842b6fef89f68f))
+
 ## [1.16.0](https://github.com/willow-memory/ratatosk/compare/v1.15.0...v1.16.0) (2026-10-09)
 
 
