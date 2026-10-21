@@ -6,62 +6,51 @@ that control cannot see — a key pasted into a file the model reads, a token
 echoed by a command that had it for its own reasons, a transcript exported to
 somewhere less careful than the session directory.
 
-Patterns are taken from `willow-mcp/src/willow_mcp/secret_scan.py`, which is
-Apache-2.0 under the same copyright holder and pure stdlib `re`. Ordering
-matters and is preserved: most specific first, so a PEM block is claimed whole
-before a token rule can nibble at its base64 body.
+The patterns are the one script's (flatten-2 F12, `onescript/scrub.py`, set
+`credentials`; the operator: "Using the onescript at every path."): the nine
+that were copied here from willow-mcp `secret_scan.py`, plus the journal set's
+vendor keys and the Discord token, and none of them `\b`-anchored, so a key
+glued to letters is masked too. Ordering matters and is the one script's: most
+specific first, so a PEM block is claimed whole before a token rule can nibble
+at its base64 body. The marker is still `[REDACTED:<kind>]`.
+
+With no one script reachable, `redact` withholds the whole text and says why
+(`[REDACTED:unreachable: ...]`) and `found` reports `["unreachable"]`: a
+backstop that cannot look must not pass the text on, and it never falls back
+to a copy of its own.
 """
 
 from __future__ import annotations
 
-import re
+from ratatosk import onescript_reach
 
 PLACEHOLDER = "[REDACTED:{kind}]"
+_SETS = ("credentials",)
 
-_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # PEM private key blocks (RSA/EC/OPENSSH/DSA/PGP or bare) — whole block.
-    (
-        "private_key",
-        re.compile(
-            r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----"
-            r".*?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----",
-            re.DOTALL,
-        ),
-    ),
-    # AWS access key id (long-term AKIA / temporary ASIA).
-    ("aws_access_key_id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    # GitHub tokens: ghp_ (PAT), gho_/ghu_/ghs_/ghr_ (app/oauth/server/refresh).
-    ("github_token", re.compile(r"\bgh[posur]_[A-Za-z0-9]{36,}\b")),
-    # Slack tokens.
-    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    # Google API key.
-    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    # Stripe live secret / restricted keys.
-    ("stripe_key", re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{16,}\b")),
-    # Provider secret keys with an `sk-` prefix (OpenAI / Anthropic `sk-ant-` /
-    # others). Kept after stripe so `sk_live_` is claimed by the stripe rule.
-    ("provider_api_key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_\-]{20,}\b")),
-    # JSON Web Token: three base64url segments, header starts `eyJ`.
-    (
-        "jwt",
-        re.compile(
-            r"\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\b"
-        ),
-    ),
-]
+
+def _scrub():
+    """The one script's ``scrub`` module, or ``None`` and why."""
+    try:
+        return onescript_reach.module("scrub"), ""
+    except onescript_reach.Unreachable as e:
+        return None, str(e)
 
 
 def redact(text: str) -> str:
     """Replace credential-shaped substrings with a labelled placeholder."""
     if not isinstance(text, str) or not text:
         return text
-    for kind, pattern in _PATTERNS:
-        text = pattern.sub(PLACEHOLDER.format(kind=kind), text)
-    return text
+    scrub, why = _scrub()
+    if scrub is None:
+        return PLACEHOLDER.format(kind=f"unreachable: {why}")
+    return scrub.apply(text, _SETS, marker=PLACEHOLDER)
 
 
 def found(text: str) -> list[str]:
     """Which kinds `redact` would mask. For diagnostics; never logs the value."""
     if not isinstance(text, str) or not text:
         return []
-    return [kind for kind, pattern in _PATTERNS if pattern.search(text)]
+    scrub, _why = _scrub()
+    if scrub is None:
+        return ["unreachable"]
+    return scrub.found_kinds(text, _SETS)
