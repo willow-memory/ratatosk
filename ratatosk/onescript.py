@@ -99,6 +99,7 @@ from ratatosk.providers import (
     to_openai_tools,
 )
 from ratatosk.redact import redact
+from ratatosk.states_local import EMPTY, POPULATED, STATES, UNREACHABLE
 
 # --- the fixed frame ---------------------------------------------------------
 
@@ -193,7 +194,8 @@ FRAME = (
     "`return` line says."
 )
 
-STATES = ("populated", "empty", "unreachable")
+# STATES, once (flatten-2): the carried copy of the one script's states.py, held
+# to it by tests/test_states_local_parity.py; imported above.
 MAX_SERVED_BYTES = (
     64 * 1024
 )  # never read more than this; anything near it is over anyway
@@ -245,20 +247,20 @@ def _doc(state: str, why: str, ret: str | None = None) -> dict:
 def load_served(path: str) -> dict:
     """The served document, or a three-state stand-in. Never the path."""
     if not path:
-        return _doc("unreachable", "nothing has been served this session")
+        return _doc(UNREACHABLE, "nothing has been served this session")
     try:
         with open(path, "rb") as f:
             data = f.read(MAX_SERVED_BYTES + 1)
     except OSError:
-        return _doc("unreachable", "the served file can't be read")
+        return _doc(UNREACHABLE, "the served file can't be read")
     if len(data) > MAX_SERVED_BYTES:
-        return _doc("empty", "the scope is too large to serve; narrow the stack")
+        return _doc(EMPTY, "the scope is too large to serve; narrow the stack")
     try:
         doc = json.loads(data.decode("utf-8"))
     except ValueError:
-        return _doc("unreachable", "the served file isn't a served document")
+        return _doc(UNREACHABLE, "the served file isn't a served document")
     if not isinstance(doc, dict) or doc.get("state") not in STATES:
-        return _doc("unreachable", "the served file isn't a served document")
+        return _doc(UNREACHABLE, "the served file isn't a served document")
     return doc
 
 
@@ -325,8 +327,8 @@ def render_served(doc: dict, budget: int) -> tuple[str, str]:
         return doc["state"], text
     ret = doc.get("return")
     ret = ret if isinstance(ret, str) and len(ret) <= 500 else None
-    stand_in = _doc("empty", "the scope is too large to serve; narrow the stack", ret)
-    return "empty", context(stand_in)
+    stand_in = _doc(EMPTY, "the scope is too large to serve; narrow the stack", ret)
+    return EMPTY, context(stand_in)
 
 
 # --- rung choice: local only, loudly -----------------------------------------
@@ -920,7 +922,7 @@ def run_loop(
             if (
                 completion.text.strip()
                 and not nudged
-                and result.state == "populated"
+                and result.state == POPULATED
                 and not result.proposals
             ):
                 nudged = True
@@ -940,7 +942,7 @@ def run_loop(
             elif name != "propose":
                 note = f"refused: no tool named {name!r}; the only tool is propose"
                 log.append({"role": "refused", "tool": name, "text": note})
-            elif result.state != "populated":
+            elif result.state != POPULATED:
                 note = (
                     f"refused: the served block is {result.state}; "
                     "there is nothing to propose from"
@@ -1087,7 +1089,7 @@ def run(
         state, block = render_served(doc, budget)
         user_text = f"{block}\n\nTask: {task}\n{TASK_TAIL}"
         floor = est_tokens(
-            context(_doc("empty", "the scope is too large to serve; narrow the stack"))
+            context(_doc(EMPTY, "the scope is too large to serve; narrow the stack"))
         )
         if budget < floor:
             raise OneScriptRefused(

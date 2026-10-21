@@ -23,6 +23,7 @@ to a copy of its own.
 from __future__ import annotations
 
 from ratatosk import onescript_reach
+from ratatosk.states_local import UNREACHABLE
 
 PLACEHOLDER = "[REDACTED:{kind}]"
 _SETS = ("credentials",)
@@ -42,7 +43,7 @@ def redact(text: str) -> str:
         return text
     scrub, why = _scrub()
     if scrub is None:
-        return PLACEHOLDER.format(kind=f"unreachable: {why}")
+        return PLACEHOLDER.format(kind=f"{UNREACHABLE}: {why}")
     return scrub.apply(text, _SETS, marker=PLACEHOLDER)
 
 
@@ -52,5 +53,5 @@ def found(text: str) -> list[str]:
         return []
     scrub, _why = _scrub()
     if scrub is None:
-        return ["unreachable"]
+        return [UNREACHABLE]
     return scrub.found_kinds(text, _SETS)
