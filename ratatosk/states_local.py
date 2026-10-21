@@ -21,11 +21,12 @@ STATES = (POPULATED, EMPTY, UNREACHABLE)
 RANKED = "ranked"  # a ranker found hits: populated
 HELD = "held"  # a write-back with a verifying seal: populated
 NONE = "none"  # no write-back answers the bite: empty
-# Not a state and not (yet) a variant: the operator is deciding whether
-# "escalated" is a fourth outcome or a step after a state, so it is NAMED here
-# and kept out of STATES and VARIANTS until that is ruled. Pile and seed write
-# it as the answer of a bite with no key; lookup carries it through.
-ESCALATED_COLD_START = "escalated:cold_start"
+# A STEP, not a state and not a variant: the return to 0 for the next tier.
+# The operator (2026-10-21): "escalated is a step, not a state, and it's just
+# the return to 0 for the next tier." It stays out of STATES and VARIANTS. Pile
+# and seed write it as the answer of a bite whose box was read and holds none
+# of the words; lookup carries it through.
+STEP_ESCALATED_COLD_START = "escalated:cold_start"
 VARIANTS = {RANKED: POPULATED, HELD: POPULATED, NONE: EMPTY}
 
 
