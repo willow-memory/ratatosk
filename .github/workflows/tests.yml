@@ -45,11 +45,35 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The one reach's parity test (flatten-2 F6.5) holds this repo's copy of
+      # willow-bot's reach_bootstrap.py to the template, so willow-bot is
+      # checked out here (inside the workspace; ONESCRIPT_HOME names it).
+      # A change that spans repos rides one branch name in each: take
+      # willow-memory/willow-bot's branch of this PR's name when it has one, else main.
+      - name: Which willow-bot
+        id: bot_ref
+        shell: bash
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --heads https://github.com/willow-memory/willow-bot "$BRANCH" >/dev/null; then
+            echo "ref=$BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        with:
+          repository: willow-memory/willow-bot
+          ref: ${{ steps.bot_ref.outputs.ref }}
+          path: willow-bot
+
       - name: Install
         run: pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -q
+        env:
+          ONESCRIPT_HOME: ${{ github.workspace }}/willow-bot/one-script
 
   test-windows:
     runs-on: windows-latest
@@ -65,11 +89,35 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The one reach's parity test (flatten-2 F6.5) holds this repo's copy of
+      # willow-bot's reach_bootstrap.py to the template, so willow-bot is
+      # checked out here (inside the workspace; ONESCRIPT_HOME names it).
+      # A change that spans repos rides one branch name in each: take
+      # willow-memory/willow-bot's branch of this PR's name when it has one, else main.
+      - name: Which willow-bot
+        id: bot_ref
+        shell: bash
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --heads https://github.com/willow-memory/willow-bot "$BRANCH" >/dev/null; then
+            echo "ref=$BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        with:
+          repository: willow-memory/willow-bot
+          ref: ${{ steps.bot_ref.outputs.ref }}
+          path: willow-bot
+
       - name: Install
         run: pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -q
+        env:
+          ONESCRIPT_HOME: ${{ github.workspace }}/willow-bot/one-script
 
   lint:
     runs-on: ubuntu-latest

@@ -8,9 +8,11 @@ import secrets
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
+
+from .. import onescript_reach
 
 PROTOCOL_VERSION = 1
 DEFAULT_TTL_SECONDS = 300
@@ -101,8 +103,16 @@ class ValidationResult:
     envelope: Envelope | None = None
 
 
+def _clock():
+    """The one script's clock (flatten-2 F8: "Using the onescript at every
+    path."). ``$ONESCRIPT_NOW`` pins it. With no one script reachable this
+    raises ``onescript_reach.Unreachable``, with why; there is no copy to fall
+    back to."""
+    return onescript_reach.module("clock")
+
+
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return _clock().now()
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -157,9 +167,7 @@ def build_envelope(
         requires_confirm = intent_enum in HIGH_RISK_INTENTS or any(
             c in {x.value for x in HIGH_RISK_CAPABILITIES} for c in caps
         )
-    expires = (_utcnow() + timedelta(seconds=ttl_seconds)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    expires = _clock().seconds_z(_utcnow() + timedelta(seconds=ttl_seconds))
     return Envelope(
         v=PROTOCOL_VERSION,
         to=to,
