@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.17.0](https://github.com/willow-memory/ratatosk/compare/v1.16.0...v1.17.0) (2026-11-01)
+
+
+### Added
+
+* **one-script:** ratatosk carries the one reach's bootstrap (flatten-2 F6.5) ([7914647](https://github.com/willow-memory/ratatosk/commit/79146471c8b21cba037013fd0ba07de36a59ae8c))
+* **one-script:** ratatosk takes the one script's rules, and carries states ([#87](https://github.com/willow-memory/ratatosk/issues/87)) ([f1bed9e](https://github.com/willow-memory/ratatosk/commit/f1bed9ec46d6d2d9d591d80154927f6f80536b77))
+
+
+### Fixed
+
+* **onescript:** a cites text too deep to decode is refused, not raised ([df25267](https://github.com/willow-memory/ratatosk/commit/df25267ccf8df1c773a11b6aced13d0d6a086120))
+* **onescript:** read cites sent as the text of a list as that list ([38b107a](https://github.com/willow-memory/ratatosk/commit/38b107aff55cac7704a044d0b70552d7f3c13f20))
+* **onescript:** read cites sent as the text of a list as that list ([#89](https://github.com/willow-memory/ratatosk/issues/89)) ([8fe1335](https://github.com/willow-memory/ratatosk/commit/8fe1335c2e5750dc5840e02e320894ebad15bf69))
+
+
+### Changed
+
+* **one-script:** ratatosk redact takes its patterns from the one script (flatten-2 F12) ([6eb17bc](https://github.com/willow-memory/ratatosk/commit/6eb17bcfc0c999715de94cd4e0abed3788d0621e))
+* **one-script:** ratatosk takes the three states from a carried copy of states.py, held by a parity test (flatten-2 reverse pass on F5) ([cf3f9fa](https://github.com/willow-memory/ratatosk/commit/cf3f9faf13fb56430465bb17976de464662ff3ae))
+* **one-script:** ratatosk's states copy follows the one script (escalated named as a step) ([2f5ba53](https://github.com/willow-memory/ratatosk/commit/2f5ba5328e2409ca980c05d05ba2a9a09f6f8858))
+* **one-script:** states_local carries the report-key constants (flatten-2 reverse pass) ([9993434](https://github.com/willow-memory/ratatosk/commit/99934344d7e2a490fe75af859d7875c795f48048))
+* **one-script:** the envelope's now and expiry come from the one clock (flatten-2 F8) ([7a6f206](https://github.com/willow-memory/ratatosk/commit/7a6f206d20adfb2d3c9579750e842b6fef89f68f))
+
 ## [1.16.0](https://github.com/willow-memory/ratatosk/compare/v1.15.0...v1.16.0) (2026-10-09)
 
 
