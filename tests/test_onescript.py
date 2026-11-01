@@ -1109,6 +1109,18 @@ def test_cites_text_that_is_not_a_list_of_ids_is_still_refused(sent):
     assert row is None and why == "cites must be a list of served table id strings"
 
 
+def test_cites_text_too_deep_to_decode_is_refused_not_raised(monkeypatch):
+    # json raises RecursionError on deep nesting under 3.10/3.11; force it here
+    def deep(_s):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(os_mod.json, "loads", deep)
+    row, why = os_mod.validate_proposal(
+        {"path": "a.md", "data": "d", "cites": "[" * 1001 + "]" * 1001, "claim": "c"}
+    )
+    assert row is None and why == "cites must be a list of served table id strings"
+
+
 def test_a_stringified_cites_row_is_written_as_a_real_list(box):
     _tmp, _served, out = box
     _c, result, _s = go(box, [[good(cites='["id00"]')], []])

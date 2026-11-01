@@ -794,7 +794,7 @@ def _decoded_cites(cites: object) -> object:
         return cites
     try:
         decoded = json.loads(cites)
-    except ValueError:
+    except (ValueError, RecursionError):  # 3.10/3.11's scanner: deep nesting raises
         return cites
     return decoded if isinstance(decoded, list) else cites
 
