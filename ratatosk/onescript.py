@@ -55,9 +55,9 @@ How a run ends (``end=`` on the summary line, with ``escalated=0|1``):
 * ``done``       the model stopped after proposing at least one row.
 * ``escalated``  the model proposed ``ESCALATE``; no further row is taken.
 * ``silent``     the model proposed nothing (and escalated nothing). A model
-  that answered in text without calling ``propose`` is nudged once ("call
-  propose — rows or ESCALATE"), one extra turn inside the same caps; a second
-  silence ends ``silent``.
+  that answered in text, or in nothing, without calling ``propose`` is nudged
+  once ("call propose — rows or ESCALATE"), one extra turn inside the same
+  caps; a second silence ends ``silent``.
 * ``turn_cap`` / ``wall_clock`` / ``ctx_full`` / ``timeout`` /
   ``provider_error:*`` / ``crash:*``  the turn ended early.
 
@@ -611,6 +611,8 @@ class OllamaToolClient:
             "messages": self._messages(request.system, request.messages),
             "tools": to_openai_tools(request.tools),
             "stream": False,
+            # Top-level, not in options: qwen3 thinks by default and the budget goes on it.
+            "think": False,
             "options": {
                 "num_ctx": self.ctx,
                 "num_predict": request.max_tokens,
@@ -933,16 +935,15 @@ def run_loop(
         log.append({"role": "assistant", "text": completion.text})
         uses = completion.tool_uses
         if not uses:
-            # A thinking-mode model can answer in text and call nothing. Give
-            # it one more turn to call propose; a second silence is final.
-            if (
-                completion.text.strip()
-                and not nudged
-                and result.state == POPULATED
-                and not result.proposals
-            ):
+            # A thinking-mode model can answer in text, or in nothing, and call
+            # nothing. Give it one more turn to call propose; a second silence
+            # is final.
+            if not nudged and result.state == POPULATED and not result.proposals:
                 nudged = True
-                messages.append({"role": "assistant", "content": completion.text[:500]})
+                if completion.text.strip():
+                    messages.append(
+                        {"role": "assistant", "content": completion.text[:500]}
+                    )
                 messages.append({"role": "user", "content": NUDGE})
                 log.append({"role": "nudge", "text": NUDGE})
                 continue
