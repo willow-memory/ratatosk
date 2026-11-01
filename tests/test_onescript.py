@@ -1087,6 +1087,48 @@ def test_a_plain_relative_path_is_accepted(path):
     assert os_mod.plain_relative_path(path) is True
 
 
+@pytest.mark.parametrize(
+    "sent, kept",
+    [('["id00"]', ["id00"]), ("[]", []), ('["a", "b"]', ["a", "b"])],
+)
+def test_cites_sent_as_the_text_of_a_list_is_read_as_that_list(sent, kept):
+    row, why = os_mod.validate_proposal(
+        {"path": "a.md", "data": "d", "cites": sent, "claim": "c"}
+    )
+    assert why == "" and row["cites"] == kept
+
+
+@pytest.mark.parametrize(
+    "sent",
+    ["id00", '"id00"', '{"a": 1}', "[1, 2]", '[""]', "[not json", "x" * 5000],
+)
+def test_cites_text_that_is_not_a_list_of_ids_is_still_refused(sent):
+    row, why = os_mod.validate_proposal(
+        {"path": "a.md", "data": "d", "cites": sent, "claim": "c"}
+    )
+    assert row is None and why == "cites must be a list of served table id strings"
+
+
+def test_cites_text_too_deep_to_decode_is_refused_not_raised(monkeypatch):
+    # json raises RecursionError on deep nesting under 3.10/3.11; force it here
+    def deep(_s):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(os_mod.json, "loads", deep)
+    row, why = os_mod.validate_proposal(
+        {"path": "a.md", "data": "d", "cites": "[" * 1001 + "]" * 1001, "claim": "c"}
+    )
+    assert row is None and why == "cites must be a list of served table id strings"
+
+
+def test_a_stringified_cites_row_is_written_as_a_real_list(box):
+    _tmp, _served, out = box
+    _c, result, _s = go(box, [[good(cites='["id00"]')], []])
+    assert result.proposals == 1
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert row["cites"] == ["id00"]
+
+
 # F5 / extra
 
 

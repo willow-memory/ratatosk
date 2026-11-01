@@ -784,6 +784,21 @@ def plain_relative_path(path: str) -> bool:
     )
 
 
+def _decoded_cites(cites: object) -> object:
+    """A small model often sends `cites` as the JSON text of a list
+    (`"[\\"id\\"]"`, `"[]"`) rather than the list (rat_turn 3edbab7b, 20fd71cf:
+    every call refused for it, temperature 0). Such a string is read as the
+    list it spells; anything else is handed back unchanged and judged as
+    before. The ids are still checked against the served file at `turn`."""
+    if not isinstance(cites, str) or len(cites) > MAX_CITES * (MAX_CITE + 4) + 2:
+        return cites
+    try:
+        decoded = json.loads(cites)
+    except (ValueError, RecursionError):  # 3.10/3.11's scanner: deep nesting raises
+        return cites
+    return decoded if isinstance(decoded, list) else cites
+
+
 def validate_proposal(args: object) -> tuple[dict | None, str]:
     """(row, "") for a well-formed call, or (None, why) to hand back."""
     if not isinstance(args, dict):
@@ -805,6 +820,7 @@ def validate_proposal(args: object) -> tuple[dict | None, str]:
         return None, 'the name ESCALATE is reserved: use exactly "ESCALATE" to escalate'
     if not isinstance(data, str) or len(data) > MAX_DATA:
         return None, f"data must be a string of at most {MAX_DATA} characters"
+    cites = _decoded_cites(cites)
     if (
         not isinstance(cites, list)
         or len(cites) > MAX_CITES
