@@ -221,7 +221,9 @@ def test_the_summary_line_does_not_carry_the_path(box, capsys):
     go(box, [[]])
     line = capsys.readouterr().out
     assert line.startswith("[onescript] model=gemma3:4b rung=ollama ctx=4096 (flag)")
-    assert "served=populated proposals=0 turns=1 end=silent escalated=0" in line
+    assert (
+        "served=populated proposals=0 turns=2 end=silent escalated=0" in line
+    )  # empty: nudged once
     assert served.parent.name not in line
 
 
@@ -403,7 +405,7 @@ def test_a_malformed_proposal_is_refused_not_written(box, bad):
     _tmp, _served, out = box
     _c, result, stub = go(box, [[good(**bad)], []])
     assert result.proposals == 0 and out.read_text() == ""
-    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    handed_back = stub.requests[1].messages[2]["content"][0]["content"]
     assert handed_back.startswith("refused:")
 
 
@@ -422,7 +424,7 @@ def test_a_foreign_tool_is_refused_recorded_and_never_executed(box):
     assert result.proposals == 0 and out.read_text() == ""
     refusals = [e for e in result.transcript if e["role"] == "refused"]
     assert refusals and refusals[0]["tool"] == "write_file"
-    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    handed_back = stub.requests[1].messages[2]["content"][0]["content"]
     assert "no tool named" in handed_back
 
 
@@ -710,6 +712,7 @@ def test_the_ollama_client_sends_the_tool_and_the_window(ollama_stub):
     assert [t["function"]["name"] for t in sent["tools"]] == ["propose"]
     assert [m["role"] for m in sent["messages"]] == ["system", "user"]
     assert sent["stream"] is False
+    assert sent["think"] is False and "think" not in sent["options"]
     use = completion.tool_uses[0]
     assert use["name"] == "propose" and use["input"]["path"] == "a.md"
     assert (completion.tokens_in, completion.tokens_out) == (321, 12)
@@ -1158,7 +1161,7 @@ def test_propose_is_refused_when_the_served_state_is_not_populated(box, doc):
     _tmp, _served, out = box
     _c, result, stub = go(box, [[good()], []], doc=doc)
     assert result.proposals == 0 and out.read_text() == ""
-    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    handed_back = stub.requests[1].messages[2]["content"][0]["content"]
     assert handed_back.startswith("refused:") and doc["state"] in handed_back
 
 
@@ -1379,7 +1382,7 @@ def test_an_escalation_needs_its_reason(box):
         _c, result, stub = go(box, [[esc(claim=claim)], []])
         assert result.escalated == 0 and out.read_text() == ""
         assert result.end_reason == "silent"
-        handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+        handed_back = stub.requests[1].messages[2]["content"][0]["content"]
         assert handed_back.startswith("refused:") and "reason" in handed_back
 
 
@@ -1410,7 +1413,7 @@ def test_escalate_is_a_reserved_whole_name_not_a_substring(box, path):
         return
     assert result.escalated == 0 and result.proposals == 0
     assert out.read_text() == "" and result.end_reason == "silent"
-    assert "reserved" in stub.requests[1].messages[-1]["content"][0]["content"]
+    assert "reserved" in stub.requests[1].messages[2]["content"][0]["content"]
 
 
 def test_a_document_cannot_pass_as_an_escalation_or_the_reverse(box):
@@ -1437,7 +1440,7 @@ def test_escalation_is_refused_when_the_served_state_is_not_populated(box, doc):
     _tmp, _served, out = box
     _c, result, stub = go(box, [[esc()], []], doc=doc)
     assert result.escalated == 0 and out.read_text() == ""
-    handed_back = stub.requests[1].messages[-1]["content"][0]["content"]
+    handed_back = stub.requests[1].messages[2]["content"][0]["content"]
     assert handed_back.startswith("refused:") and doc["state"] in handed_back
     assert result.end_reason == "silent"
 
@@ -1492,8 +1495,29 @@ def test_no_nudge_after_rows_or_for_a_silent_model_or_an_unserved_block(box):
     _c, _r, stub = go(box, [[{"text": "thinking"}]], doc={
         "state": "empty", "why": "no scope", "tables": []})  # fmt: skip
     assert len(stub.requests) == 1
-    _c, _r, stub = go(box, [[]])
-    assert len(stub.requests) == 1
+    _c, _r, stub = go(box, [[]], doc=served_doc())
+    assert len(stub.requests) == 2  # an empty answer used to get no nudge (1)
+    _c, _r, stub = go(box, [[]], doc={
+        "state": "empty", "why": "no scope", "tables": []})  # fmt: skip
+    assert len(stub.requests) == 1  # still no nudge on an unserved block
+
+
+def test_an_empty_answer_is_nudged_once_then_a_propose_ends_done(box):
+    _tmp, _served, out = box
+    _c, result, stub = go(box, [[], [good()], []])
+    assert (result.end_reason, result.proposals, result.turns) == ("done", 1, 3)
+    assert stub.requests[1].messages[1] == {"role": "user", "content": os_mod.NUDGE}
+    assert len(rows(out)) == 1
+
+
+def test_two_empty_answers_end_silent_with_one_nudge(box):
+    _tmp, _served, out = box
+    _c, result, stub = go(box, [[], [], [good()]])
+    assert (result.end_reason, result.turns) == ("silent", 2)
+    assert len(stub.requests) == 2
+    nudge = {"role": "user", "content": os_mod.NUDGE}
+    assert stub.requests[-1].messages.count(nudge) == 1
+    assert out.read_text() == ""
 
 
 def test_the_nudge_obeys_the_turn_cap(box):
