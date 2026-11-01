@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.17.1](https://github.com/willow-memory/ratatosk/compare/v1.17.0...v1.17.1) (2026-11-01)
+
+
+### Fixed
+
+* **onescript:** ask Ollama not to think, and nudge an empty answer once ([a5610e3](https://github.com/willow-memory/ratatosk/commit/a5610e3dc172d5c92e0eb4a736a81b50285887ec))
+* **onescript:** ask Ollama not to think, and nudge an empty answer once ([#90](https://github.com/willow-memory/ratatosk/issues/90)) ([74a6754](https://github.com/willow-memory/ratatosk/commit/74a67544479877575d4a3f181347e1b8a1ae8052))
+
 ## [1.17.0](https://github.com/willow-memory/ratatosk/compare/v1.16.0...v1.17.0) (2026-11-01)
 
 
